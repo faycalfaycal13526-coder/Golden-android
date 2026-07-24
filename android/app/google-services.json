@@ -1,0 +1,55 @@
+{
+  "project_info": {
+    "project_number": "152065600130",
+    "firebase_url": "https://ahmed-88be9-default-rtdb.firebaseio.com",
+    "project_id": "ahmed-88be9",
+    "storage_bucket": "ahmed-88be9.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:152065600130:android:e928538f878112ecdee29b",
+        "android_client_info": {
+          "package_name": "com.goldenstore.app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "152065600130-4cusge84vue17kdi1826ovnk8m3rclo7.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.goldenstore.app",
+            "certificate_hash": "41f482cd5c076200c72c9891d014d7465caa9081"
+          }
+        },
+        {
+          "client_id": "152065600130-5gr61kmkcbrcekpdevgtqtq2bhp3jm22.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAijDtEFrMrnmOMFlIhEWgnM_bOCCR7w-k"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "152065600130-5gr61kmkcbrcekpdevgtqtq2bhp3jm22.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "152065600130-uv745nseg6c7g7or6acu8pec2f5g95sv.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.instagramCloneFlutter"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

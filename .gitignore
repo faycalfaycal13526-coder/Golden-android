@@ -1,0 +1,9 @@
+node_modules/
+android/.gradle/
+android/app/build/
+android/build/
+local.properties
+android/app/google-services.json
+*.apk
+*.jks
+*.keystore
