@@ -1,50 +1,43 @@
 {
   "project_info": {
-    "project_number": "152065600130",
-    "firebase_url": "https://ahmed-88be9-default-rtdb.firebaseio.com",
-    "project_id": "ahmed-88be9",
-    "storage_bucket": "ahmed-88be9.firebasestorage.app"
+    "project_number": "792594765257",
+    "firebase_url": "https://golden-store-40dd6-default-rtdb.europe-west1.firebasedatabase.app",
+    "project_id": "golden-store-40dd6",
+    "storage_bucket": "golden-store-40dd6.firebasestorage.app"
   },
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:152065600130:android:e928538f878112ecdee29b",
+        "mobilesdk_app_id": "1:792594765257:android:a0596758b44947dfba8418",
         "android_client_info": {
           "package_name": "com.goldenstore.app"
         }
       },
       "oauth_client": [
         {
-          "client_id": "152065600130-4cusge84vue17kdi1826ovnk8m3rclo7.apps.googleusercontent.com",
+          "client_id": "792594765257-eo7caqoeu2t1i4kc04k6kumbjv41p4sh.apps.googleusercontent.com",
           "client_type": 1,
           "android_info": {
             "package_name": "com.goldenstore.app",
-            "certificate_hash": "41f482cd5c076200c72c9891d014d7465caa9081"
+            "certificate_hash": "da0b7274fe113425b2d7f9af4bac935c6fecce90"
           }
         },
         {
-          "client_id": "152065600130-5gr61kmkcbrcekpdevgtqtq2bhp3jm22.apps.googleusercontent.com",
+          "client_id": "792594765257-1i8ebo2dggrn43ah8v0md8rbvfka3n7q.apps.googleusercontent.com",
           "client_type": 3
         }
       ],
       "api_key": [
         {
-          "current_key": "AIzaSyAijDtEFrMrnmOMFlIhEWgnM_bOCCR7w-k"
+          "current_key": "AIzaSyCBG4zQSAeiE5cui3rFVaDEAhwF45EzPQU"
         }
       ],
       "services": {
         "appinvite_service": {
           "other_platform_oauth_client": [
             {
-              "client_id": "152065600130-5gr61kmkcbrcekpdevgtqtq2bhp3jm22.apps.googleusercontent.com",
+              "client_id": "792594765257-1i8ebo2dggrn43ah8v0md8rbvfka3n7q.apps.googleusercontent.com",
               "client_type": 3
-            },
-            {
-              "client_id": "152065600130-uv745nseg6c7g7or6acu8pec2f5g95sv.apps.googleusercontent.com",
-              "client_type": 2,
-              "ios_info": {
-                "bundle_id": "com.example.instagramCloneFlutter"
-              }
             }
           ]
         }
