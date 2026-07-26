@@ -2,14 +2,12 @@
 // Uses Firebase compat SDK loaded from CDN in HTML
 
 var FIREBASE_CONFIG = {
-  apiKey: "AIzaSyC8Ea0p8KXudJWyt8_olKrGBjI52P9EoEM",
-  authDomain: "ahmed-88be9.firebaseapp.com",
-  databaseURL: "https://ahmed-88be9-default-rtdb.firebaseio.com",
-  projectId: "ahmed-88be9",
-  storageBucket: "ahmed-88be9.firebasestorage.app",
-  messagingSenderId: "152065600130",
-  appId: "1:152065600130:web:1824f21e11207e0edee29b",
-  measurementId: "G-5VN0LTLNGX"
+  apiKey: "AIzaSyCBG4zQSAeiE5cui3rFVaDEAhwF45EzPQU",
+  authDomain: "golden-store-40dd6.firebaseapp.com",
+  databaseURL: "https://golden-store-40dd6-default-rtdb.europe-west1.firebasedatabase.app",
+  projectId: "golden-store-40dd6",
+  storageBucket: "golden-store-40dd6.firebasestorage.app",
+  messagingSenderId: "792594765257"
 };
 
 var _app = null;
