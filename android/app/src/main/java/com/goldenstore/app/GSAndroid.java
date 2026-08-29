@@ -758,7 +758,7 @@ public class GSAndroid {
                 installedPrefs.edit().putString(s, installedPackage).apply();
                 persisted.remove(s);
                 savePersistedStates();
-                mainHandler.post(() -> emit(s, "installed", 1.0, null));
+                mainHandler.post(() -> emit(s, "installed", 1.0, installedPackage));
                 return;
             }
         }
@@ -778,8 +778,12 @@ public class GSAndroid {
         if (packageName != null && !packageName.isEmpty()) {
             installedPrefs.edit().putString(slug, packageName).apply();
         }
+        final String resolvedPkg = packageName;
         mainHandler.post(() -> {
-            emit(slug, "installed", 1.0, null);
+            // Message payload carries the REAL resolved package name so the
+            // web layer can wire Open/Uninstall to the correct package even
+            // when the store metadata is empty or wrong.
+            emit(slug, "installed", 1.0, resolvedPkg);
             // Install finished — tidy up like Google Play: drop the tracked
             // state and delete the downloaded APK file.
             DownloadState st = active.get(slug);
@@ -842,7 +846,8 @@ public class GSAndroid {
                 it.remove();
                 dirty = true;
                 final String s = slug;
-                mainHandler.post(() -> emit(s, "installed", 1.0, null));
+                final String rp = pkg;
+                mainHandler.post(() -> emit(s, "installed", 1.0, rp));
             } else if ("installing".equals(status)) {
                 try { p.put("status", "downloaded"); } catch (Exception ignore) {}
                 dirty = true;
@@ -922,6 +927,119 @@ public class GSAndroid {
         } catch (Throwable t) {
             return "";
         }
+    }
+
+    /**
+     * THE single source of truth for the install button state (v1.9).
+     *
+     * Resolves whether the app behind `slug` is REALLY installed on this
+     * device, trying every ground-truth in order:
+     *   1. the caller-supplied package name (store metadata) → PackageManager
+     *   2. the slug→package registry (built from REAL installs) → PackageManager
+     *   3. the downloaded APK file itself → read its REAL manifest package →
+     *      PackageManager   (closes the hole where store metadata is empty
+     *      or wrong — the APK file cannot lie)
+     *
+     * On the FIRST positive detection the full Google-Play cleanup runs:
+     * registry updated, tracked state dropped, APK file deleted, the
+     * "تم التثبيت" notification posted and the "installed" event pushed to
+     * the web layer. Subsequent calls are cheap no-ops.
+     *
+     * Returns a JSON object:
+     *   { installed: bool, version: "...", package_name: "...",
+     *     status: "downloading|downloaded|installing|none", progress: -1..1,
+     *     filename: "..." }
+     */
+    @JavascriptInterface
+    public String checkAppStatus(final String slug, final String packageName) {
+        JSONObject out = new JSONObject();
+        try {
+            out.put("installed", false);
+            out.put("package_name", "");
+            out.put("version", "");
+            out.put("status", "none");
+            out.put("progress", -1);
+            out.put("filename", "");
+        } catch (Exception ignore) {}
+
+        if (slug == null || slug.isEmpty()) return out.toString();
+        ensureReconciled();
+
+        // Live/persisted progress snapshot (reported even when not installed).
+        DownloadState live = active.get(slug);
+        JSONObject persistedState = persisted.get(slug);
+        String liveStatus = live != null ? live.status
+                : (persistedState != null ? persistedState.optString("status", "") : "");
+        String liveFilename = live != null && live.filename != null ? live.filename
+                : (persistedState != null ? persistedState.optString("filename", "") : "");
+        double liveProgress = -1;
+        if (live != null && live.totalBytes > 0) {
+            liveProgress = (double) live.downloadedBytes / live.totalBytes;
+        } else if (persistedState != null) {
+            liveProgress = persistedState.optDouble("progress", -1);
+        }
+
+        File apkFile = downloadFile(liveFilename);
+
+        // ---- Ground-truth resolution chain ----
+        String resolvedPkg = "";
+        String resolvedVer = "";
+
+        // 1) Metadata package name supplied by the web layer.
+        if (packageName != null && !packageName.trim().isEmpty()) {
+            String ver = isPackageInstalledInternal(packageName.trim());
+            if (!ver.isEmpty()) { resolvedPkg = packageName.trim(); resolvedVer = ver; }
+        }
+
+        // 2) Slug→package registry (real installs remembered natively).
+        if (resolvedPkg.isEmpty()) {
+            try {
+                String reg = installedPrefs.getString(slug, "");
+                if (reg != null && !reg.isEmpty()) {
+                    String ver = isPackageInstalledInternal(reg);
+                    if (!ver.isEmpty()) { resolvedPkg = reg; resolvedVer = ver; }
+                    else installedPrefs.edit().remove(slug).apply(); // stale
+                }
+            } catch (Exception ignore) {}
+        }
+
+        // 3) REAL package read straight from the downloaded APK file.
+        if (resolvedPkg.isEmpty() && apkFile != null) {
+            String realPkg = readApkPackageName(apkFile);
+            if (realPkg != null && !realPkg.isEmpty()) {
+                String ver = isPackageInstalledInternal(realPkg);
+                if (!ver.isEmpty()) { resolvedPkg = realPkg; resolvedVer = ver; }
+            }
+        }
+
+        boolean installed = !resolvedPkg.isEmpty();
+
+        if (installed) {
+            // Register the REAL package for this slug (فتح/إلغاء التثبيت rely on it).
+            installedPrefs.edit().putString(slug, resolvedPkg).apply();
+
+            // First detection? Run the Google-Play end-of-install pipeline
+            // (drop state, delete the APK, post the "تم التثبيت" notification
+            // and push "installed" to the web layer).
+            boolean alreadyClean = !persisted.containsKey(slug)
+                    && (live == null || live.installed);
+            if (!alreadyClean) {
+                markStateInstalled(slug, resolvedPkg);
+                liveStatus = "installed";
+            }
+        } else if (live != null) {
+            live.installed = false;
+        }
+
+        try {
+            out.put("installed", installed);
+            out.put("package_name", resolvedPkg);
+            out.put("version", resolvedVer);
+            out.put("status", installed ? "installed" : (liveStatus == null || liveStatus.isEmpty() ? "none" : liveStatus));
+            out.put("progress", liveProgress);
+            out.put("filename", liveFilename == null ? "" : liveFilename);
+        } catch (Exception ignore) {}
+        return out.toString();
     }
 
     /** Resolves the downloads directory file, or null when it doesn't exist. */

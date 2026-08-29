@@ -1056,14 +1056,18 @@ window.__gsApkDownloadUpdate = function (slug, status, progress, message) {
         const dls = getActiveDownloadMap();
         if (dls[slug]) setActiveDownload({ slug, status: 'installing', progress: 1 });
       } else if (status === 'installed') {
-        markInstalledStored(slug);
-        removeApkState(slug);
-        removeActiveDownload(slug);
+        // Central pipeline: registry + state cleanup + UI events. `message`
+        // carries the REAL resolved package name (native ground truth).
+        applyInstalled(slug, message || '');
       } else if (status === 'cancelled' || status === 'failed') {
         removeApkState(slug);
         removeActiveDownload(slug);
       }
-      try { window.dispatchEvent(new CustomEvent('gs-apk-state', { detail: { slug, status, progress, message } })); } catch (e) {}
+      // NOTE: for "installed" applyInstalled() already dispatched the
+      // gs-apk-state event — don't fire it twice (double toasts/UI swaps).
+      if (status !== 'installed') {
+        try { window.dispatchEvent(new CustomEvent('gs-apk-state', { detail: { slug, status, progress, message } })); } catch (e) {}
+      }
     }
   } catch (e) { console.error('[apkStateHub]', e); }
 
@@ -1194,6 +1198,103 @@ function syncNativeStates() {
   } catch (e) { console.error('[syncNativeStates]', e); }
 }
 
+/* ------------------- Device truth resolver + heartbeat (v1.9) -------------------
+ * The #1 reliability rule of Google Play: the DEVICE decides, always.
+ * Native checkAppStatus(slug, pkg) resolves an app through every ground truth
+ * (metadata package → slug registry → REAL package read from the APK file),
+ * so a missed broadcast, a stale snapshot or wrong store metadata can never
+ * leave a button stuck on "جارٍ التثبيت" or "تثبيت + حذف الملف" again:
+ * within a heartbeat the UI re-syncs itself to the real device state. */
+function isNativeBridge() {
+  return !!(window.GSAndroid && typeof window.GSAndroid.checkAppStatus === 'function');
+}
+// Ask the device for the REAL install status of an app. Returns
+// { installed, version, package_name, status, progress, filename } or null.
+function checkAppStatus(slug, packageName) {
+  if (!slug || !isNativeBridge()) return null;
+  try {
+    const raw = window.GSAndroid.checkAppStatus(String(slug), String(packageName || ''));
+    const obj = raw ? JSON.parse(raw) : null;
+    if (obj && obj.package_name) rememberResolvedPackage(slug, obj.package_name);
+    return obj;
+  } catch (e) { return null; }
+}
+// slug → REAL device package (learned from successful status checks / install
+// events). Open/Uninstall must always use THIS, never the possibly-wrong
+// store metadata.
+const RESOLVED_PKG_KEY = 'gs_resolved_pkgs';
+function rememberResolvedPackage(slug, pkg) {
+  if (!slug || !pkg) return;
+  try {
+    const map = JSON.parse(sessionStorage.getItem(RESOLVED_PKG_KEY) || '{}');
+    if (map[slug] === pkg) return;
+    map[slug] = pkg;
+    sessionStorage.setItem(RESOLVED_PKG_KEY, JSON.stringify(map));
+  } catch {}
+}
+function resolvedPackageName(slug) {
+  if (!slug) return '';
+  try {
+    const map = JSON.parse(sessionStorage.getItem(RESOLVED_PKG_KEY) || '{}');
+    return map[slug] || '';
+  } catch { return ''; }
+}
+// Central "install completed" pipeline — the ONLY place that flips states,
+// so events from the native push, the snapshot and the heartbeat all end up
+// in exactly the same clean state.
+const recentInstalledAt = Object.create(null);
+function applyInstalled(slug, resolvedPkg) {
+  if (!slug) return;
+  const now = Date.now();
+  if (now - (recentInstalledAt[slug] || 0) < 3000) return; // dedupe bursts
+  recentInstalledAt[slug] = now;
+  if (resolvedPkg) rememberResolvedPackage(slug, resolvedPkg);
+  markInstalledStored(slug);
+  removeApkState(slug);
+  removeActiveDownload(slug);
+  try { window.dispatchEvent(new CustomEvent('gs-apk-state', { detail: { slug, status: 'installed', progress: 1, message: resolvedPkg || '' } })); } catch (e) {}
+  try { window.dispatchEvent(new CustomEvent('gs-install-resolved', { detail: { slug, packageName: resolvedPkg || '' } })); } catch (e) {}
+}
+// Apps the current page wants watched (detail page registers its app here;
+// the heartbeat keeps it synced even with zero live downloads).
+const watchedApps = new Map(); // slug → packageName
+let heartbeatTimer = null;
+function registerInstallWatch(slug, packageName) {
+  if (!slug) return;
+  watchedApps.set(slug, packageName || '');
+  startHeartbeat();
+}
+function startHeartbeat() {
+  if (heartbeatTimer || !isNativeBridge()) return;
+  heartbeatTimer = setInterval(heartbeatTick, 1500);
+  // Re-sync the moment the page becomes visible/focused again (returning
+  // from the system installer, app switch, lock screen…).
+  const onVisible = () => { if (!document.hidden) heartbeatTick(); };
+  document.addEventListener('visibilitychange', onVisible);
+  window.addEventListener('focus', onVisible);
+  window.addEventListener('pageshow', onVisible);
+}
+function heartbeatTick() {
+  if (!isNativeBridge()) return;
+  try {
+    // 1) The app this page displays (even when no live download exists).
+    watchedApps.forEach((pkg, slug) => {
+      const st = checkAppStatus(slug, pkg || resolvedPackageName(slug));
+      if (st && st.installed) applyInstalled(slug, st.package_name);
+    });
+    // 2) Every non-idle live entry (self-heals the library & other pages).
+    const map = getApkStateMap();
+    Object.keys(map).forEach((slug) => {
+      const st = map[slug];
+      if (!st || st.status === 'none') return;
+      if (st.status === 'downloading') return; // downloads stream their own events
+      const info = st.package_name || resolvedPackageName(slug) || '';
+      const res = checkAppStatus(slug, info);
+      if (res && res.installed) applyInstalled(slug, res.package_name);
+    });
+  } catch (e) { console.error('[heartbeat]', e); }
+}
+
 /* ------------------- Installed apps registry (device truth) ------------------- */
 const INSTALL_KEY = 'gs_installed';
 function installedSet() {
@@ -1259,6 +1360,9 @@ function boot() {
   // Restore live download/install states from the native bridge right away so
   // the app page and the library show real progress/status after a restart.
   syncNativeStates();
+  // Device-truth heartbeat: continuously reconcile install states with the
+  // real PackageManager so no missed event can ever leave a button stuck.
+  startHeartbeat();
   // Check for a newer app version shortly after the store renders.
   if (isNativeApp()) setTimeout(checkAppUpdate, 2000);
 }
@@ -1463,6 +1567,7 @@ window.Store = {
   getApkState, getApkStateMap, setApkState, removeApkState, onApkState, syncNativeStates,
   isInstalledStored, markInstalledStored, unmarkInstalledStored,
   installedVersionOnDevice, versionIsNewer, cancelDownload, isSlugInstalled,
+  checkAppStatus, resolvedPackageName, rememberResolvedPackage, registerInstallWatch, applyInstalled,
   checkAppUpdate, showUpdateDialog,
 };
 

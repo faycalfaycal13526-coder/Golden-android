@@ -71,8 +71,12 @@
 
     const list = el('div', { class: 'lib-list' });
     history.forEach((item) => {
-      // Real device check: mark items actually installed on this device.
-      const deviceVer = S.installedVersionOnDevice(item.package_name || '');
+      // Real device check with full fallback chain (v1.9): metadata package →
+      // native slug registry → resolved package learned from real installs.
+      const resolved = S.resolvedPackageName ? S.resolvedPackageName(item.slug) : '';
+      let deviceVer = S.installedVersionOnDevice(item.package_name || '');
+      if (!deviceVer && resolved) deviceVer = S.installedVersionOnDevice(resolved);
+      if (!deviceVer) deviceVer = S.isSlugInstalled(item.slug);
       const row = el('a', { href: `/app?slug=${encodeURIComponent(item.slug)}`, class: 'lib-row' },
         el('div', { class: 'art' },
           item.icon_url
@@ -117,17 +121,21 @@
       const historyById = {};
       S.getDownloadHistory().forEach((h) => { historyById[h.slug] = h; });
 
-      // Self-heal FIRST: an "installing" entry whose package is REALLY
-      // installed (its event was lost while navigating between pages) is
-      // dropped right away instead of sticking on "جارٍ التثبيت…" forever.
+      // Self-heal FIRST — the DEVICE decides (v1.9): any "installing" or
+      // "downloaded" entry whose app is REALLY installed (event lost while
+      // navigating, wrong metadata, missed broadcast…) is dropped right away
+      // instead of sticking on "جارٍ التثبيت…" forever. checkAppStatus also
+      // resolves the REAL package from the APK file when metadata is empty.
       entries = entries.filter((st) => {
-        if (st.status !== 'installing') return true;
-        const pkg = st.package_name || (historyById[st.slug] || {}).package_name || '';
-        const ver = (pkg && S.installedVersionOnDevice(pkg)) || S.isSlugInstalled(st.slug);
-        if (!ver) return true;
-        S.removeApkState(st.slug);
-        S.removeActiveDownload(st.slug);
-        return false;
+        if (st.status !== 'installing' && st.status !== 'downloaded') return true;
+        const info = historyById[st.slug] || {};
+        const res = S.checkAppStatus ? S.checkAppStatus(st.slug, st.package_name || info.package_name || '') : null;
+        if (res && res.installed) {
+          S.removeApkState(st.slug);
+          S.removeActiveDownload(st.slug);
+          return false;
+        }
+        return true;
       });
       if (!entries.length) return;
 

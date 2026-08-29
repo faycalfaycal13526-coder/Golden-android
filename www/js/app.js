@@ -362,15 +362,21 @@
     }
 
     // ---- Post-install actions: Open + Uninstall (native app only) ----
+    // CRITICAL: always open/uninstall by the REAL device package. The store
+    // metadata can be empty or wrong; S.resolvedPackageName returns the
+    // package learned from the device itself (native ground truth).
+    function realPackage(a) {
+      return (S.resolvedPackageName && S.resolvedPackageName(a.slug)) || a.package_name || '';
+    }
     function openInstalled(a) {
       if (isNativeApp() && window.GSAndroid && typeof window.GSAndroid.openInstalledApp === 'function') {
-        try { window.GSAndroid.openInstalledApp(a.package_name || '', a.slug || ''); return; } catch (e) {}
+        try { window.GSAndroid.openInstalledApp(realPackage(a), a.slug || ''); return; } catch (e) {}
       }
       toast(t('تعذّر فتح التطبيق'), 'error');
     }
     function uninstallInstalled(a) {
       if (isNativeApp() && window.GSAndroid && typeof window.GSAndroid.uninstallApp === 'function') {
-        try { window.GSAndroid.uninstallApp(a.package_name || ''); return; } catch (e) {}
+        try { window.GSAndroid.uninstallApp(realPackage(a)); return; } catch (e) {}
       }
       toast(t('غير متاح في هذا المتصفح'), 'info');
     }
@@ -433,7 +439,7 @@
       const bar = el('div', { class: 'installed-actions', id: 'gs-installed-actions' },
         el('button', { class: 'btn btn-primary btn-lg', type: 'button', onclick: () => openDownloadedApk(a, filename) },
           ico('download', 'icon'), t('تثبيت')),
-        el('button', { class: 'btn btn-secondary btn-lg', type: 'button', onclick: () => { deleteDownloadedApk(a, filename); removeInstalledActions(); showIdle(true); toast(t('تم حذف ملف التحميل'), 'info'); } },
+        el('button', { class: 'btn btn-secondary btn-lg', type: 'button', onclick: () => { deleteDownloadedApk(a, filename); S.removeApkState(a.slug); S.removeActiveDownload(a.slug); removeInstalledActions(); showIdle(true); toast(t('تم حذف ملف التحميل'), 'info'); } },
           ico('trash', 'icon'), t('حذف الملف')),
       );
       const anchor = document.querySelector('.detail .d-actions');
@@ -518,10 +524,13 @@
         // Install finished — IMMEDIATELY swap to the Google Play end state:
         // [فتح] + [إلغاء التثبيت] replacing the download button, and clean
         // every pending state (the central hub already did the registry cleanup).
+        // NOTE: `message` carries the REAL resolved PACKAGE NAME (not the
+        // version) — wire it into the resolver cache for Open/Uninstall.
         markInstalledStored(app.slug);
         S.removeActiveDownload(app.slug);
         S.removeApkState(app.slug);
-        const devVer = S.installedVersionOnDevice(app.package_name || '') || S.isSlugInstalled(app.slug);
+        if (message && message !== 'installed') S.rememberResolvedPackage(app.slug, message);
+        const devVer = S.installedVersionOnDevice(realPackage(app)) || S.isSlugInstalled(app.slug);
         const hasUpdate = S.versionIsNewer(app.version_name || '', devVer);
         showInstalled(hasUpdate ? 'update' : 'open');
         showInstalledActions(app, { withOpen: !hasUpdate });
@@ -709,19 +718,22 @@
     btn.addEventListener('click', runInstall);
 
     // ----- Restore the REAL install/download state when the page (re)loads.
-    // Native: the device PackageManager is the source of truth — this is what
-    // makes the page show "فتح / إلغاء التثبيت" instead of "تثبيت" after
-    // returning to the store, and shows live progress for in-flight installs.
+    // Native: the DEVICE is the source of truth. checkAppStatus() resolves
+    // through every ground truth — store metadata package → native slug
+    // registry → REAL package read from the downloaded APK file — so the page
+    // shows "فتح / إلغاء التثبيت" immediately after an install, even when the
+    // store metadata is wrong or an event was lost. A heartbeat keeps this
+    // re-validated every 1.5s while the page is open.
     function resolveInstallState() {
-      // Device check first (package name from store metadata), then the
-      // native slug→package registry — which remembers REAL installs even
-      // when the store metadata package name is missing or wrong.
-      let deviceVer = S.installedVersionOnDevice(app.package_name || '');
-      if (!deviceVer) deviceVer = S.isSlugInstalled(app.slug);
-      const live = S.getApkState(app.slug);
-      if (deviceVer) {
+      // Keep the global heartbeat watching this app (self-heals the UI).
+      if (S.registerInstallWatch) S.registerInstallWatch(app.slug, app.package_name || '');
+
+      // 1) Device truth first (covers metadata + registry + APK-file package).
+      const st = isNativeApp() && S.checkAppStatus ? S.checkAppStatus(app.slug, app.package_name || '') : null;
+      if (st && st.installed) {
         markInstalledStored(app.slug);
-        const hasUpdate = S.versionIsNewer(app.version_name || '', deviceVer);
+        if (st.package_name) S.rememberResolvedPackage(app.slug, st.package_name);
+        const hasUpdate = S.versionIsNewer(app.version_name || '', st.version || '');
         showInstalled(hasUpdate ? 'update' : 'open');
         // Installed → [فتح][إلغاء التثبيت] replacing the button; update
         // available → keep the "تحديث" button and show uninstall only.
@@ -731,6 +743,9 @@
       // Not installed on the device — never trust a stale local registry.
       unmarkInstalledStored(app.slug);
       removeInstalledActions();
+      const live = (st && st.status && st.status !== 'none')
+        ? { status: st.status, progress: st.progress, filename: st.filename }
+        : S.getApkState(app.slug);
       if (live && live.status === 'downloading') {
         btn.classList.add('installing');
         btn.disabled = true;
@@ -756,6 +771,15 @@
       }
       showIdle();
     }
+
+    // When the heartbeat (or a native event) resolves an install while this
+    // page is open, re-render the button so it flips to فتح/إلغاء التثبيت
+    // even if the original event was missed.
+    window.addEventListener('gs-install-resolved', (e) => {
+      const d = e && e.detail || {};
+      if (!d.slug || d.slug !== app.slug) return;
+      resolveInstallState();
+    });
 
     if (isNativeApp()) {
       resolveInstallState();
