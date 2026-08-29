@@ -62,6 +62,11 @@
         return T('تعذّر الاتصال بالشبكة. تحقّق من الإنترنت وحاول مجدداً.');
       case 'auth/popup-blocked':
         return T('المتصفّح حظر النافذة المنبثقة. اسمح بالنوافذ المنبثقة ثم حاول مجدداً.');
+      case 'auth/developer-error':
+      case 'auth/invalid-credential':
+        return T('تعذّر المصادقة مع Google (مشكلة إعدادات Firebase). حاول مجدداً، وإن تكرّر الخطأ فابلغ الإدارة.');
+      case 'auth/sdk-not-ready':
+        return T('تعذّر تحميل خدمة المصادقة. تحقّق من اتصال الإنترنت وأعد المحاولة.');
       default:
         return T('تعذّر تسجيل الدخول') + (code ? ' (' + code + ')' : '') + '. ' + T('حاول مجدداً.');
     }

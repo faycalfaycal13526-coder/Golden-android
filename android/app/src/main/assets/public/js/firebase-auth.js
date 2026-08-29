@@ -2,12 +2,13 @@
 // Uses Firebase compat SDK loaded from CDN in HTML
 
 var FIREBASE_CONFIG = {
-  apiKey: "AIzaSy…zPQU",
+  apiKey: "AIzaSyCBG4zQSAeiE5cui3rFVaDEAhwF45EzPQU",
   authDomain: "golden-store-40dd6.firebaseapp.com",
   databaseURL: "https://golden-store-40dd6-default-rtdb.europe-west1.firebasedatabase.app",
   projectId: "golden-store-40dd6",
   storageBucket: "golden-store-40dd6.firebasestorage.app",
-  messagingSenderId: "792594765257"
+  messagingSenderId: "792594765257",
+  appId: "1:792594765257:android:a0596758b44947dfba8418"
 };
 
 var _app = null;
@@ -23,13 +24,18 @@ function initFirebase() {
     console.error('Firebase SDK not loaded');
     return;
   }
-  _app = firebase.initializeApp(FIREBASE_CONFIG);
+  try {
+    _app = firebase.initializeApp(FIREBASE_CONFIG);
+  } catch (e) {
+    console.error('firebase.initializeApp failed', e);
+    return;
+  }
   _auth = firebase.auth();
   _auth.languageCode = 'ar';
   _auth.onAuthStateChanged(function(user) {
     _currentUser = user;
     _resolved = true;
-    _listeners.forEach(function(fn) { fn(user); });
+    _listeners.forEach(function(fn) { try { fn(user); } catch (e) { console.error(e); } });
   });
   // Complete any pending redirect-based sign-in.
   _auth.getRedirectResult().then(function(result) {
@@ -41,7 +47,7 @@ function initFirebase() {
     _redirectPending = false;
     if (e && e.code) console.error('getRedirectResult', e.code, e.message);
     // Notify listeners so the gate re-renders with button enabled
-    _listeners.forEach(function(fn) { fn(null); });
+    _listeners.forEach(function(fn) { try { fn(null); } catch (err) {} });
   });
 }
 
@@ -90,7 +96,10 @@ function makeProvider() {
 // redirect handoff, so Google sign-in cannot complete inside them.
 function isInAppBrowser() {
   var ua = navigator.userAgent || '';
-  return /FBAN|FBAV|Instagram|Line|Twitter|Snapchat|TikTok|WebView|; wv\)/i.test(ua);
+  // NOTE: GoldenStoreApp UA is our native app — NOT an "in-app browser" for
+  // Google sign-in purposes (it has the GSAndroid native bridge).
+  if (/GoldenStoreApp/i.test(ua)) return false;
+  return /FBAN|FBAV|Instagram|Line|Twitter|Snapchat|TikTok/i.test(ua);
 }
 
 // Detect our native GoldenStore Android app — uses redirect flow instead of
@@ -109,10 +118,22 @@ function handleNativeGoogleSignIn(idToken, accessToken, email, displayName, phot
     if (window.__gsGoogleSignInReject) window.__gsGoogleSignInReject(e);
     return;
   }
+  if (!_auth) {
+    initFirebase();
+    if (!_auth) {
+      if (window.__gsGoogleSignInReject) {
+        var err = new Error('auth/sdk-not-ready');
+        err.code = 'auth/sdk-not-ready';
+        window.__gsGoogleSignInReject(err);
+      }
+      return;
+    }
+  }
   var credential = firebase.auth.GoogleAuthProvider.credential(idToken, accessToken || null);
   _auth.signInWithCredential(credential).then(function(result) {
     if (window.__gsGoogleSignInResolve) window.__gsGoogleSignInResolve(result.user);
   }).catch(function(e) {
+    console.error('signInWithCredential failed', e && e.code, e && e.message);
     if (window.__gsGoogleSignInReject) window.__gsGoogleSignInReject(e);
   });
 }

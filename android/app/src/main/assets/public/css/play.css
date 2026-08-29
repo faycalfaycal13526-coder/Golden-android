@@ -630,25 +630,52 @@ input, select { font-family: inherit; }
   position: fixed; inset: 0; z-index: 100;
   background: radial-gradient(120% 80% at 50% 0%, #1a1a1f 0%, var(--bg) 60%);
   display: flex; flex-direction: column; align-items: center; justify-content: center;
-  padding: 32px; text-align: center;
+  padding: 24px 20px; text-align: center;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
+.gate > * { flex-shrink: 0; }
 .gate .logo {
-  width: 96px; height: 96px; border-radius: 24px; overflow: hidden;
-  box-shadow: 0 12px 40px rgba(0,0,0,.5); margin-bottom: 24px;
+  width: 104px; height: 104px; border-radius: 26px; overflow: hidden;
+  box-shadow: 0 12px 40px rgba(0,0,0,.5);
+  margin-bottom: 22px;
+  background: linear-gradient(160deg, #ffe9a8 0%, #f4c01f 60%, #b8860b 100%);
+  padding: 6px;
 }
-.gate .logo img { width: 100%; height: 100%; object-fit: cover; }
-.gate h1 { font-size: 26px; font-weight: 800; }
+.gate .logo img {
+  width: 100%; height: 100%;
+  object-fit: contain;
+  border-radius: 20px;
+  background: radial-gradient(circle at 50% 30%, rgba(255,255,255,.18), transparent 60%);
+}
+.gate h1 {
+  font-size: 28px; font-weight: 800; letter-spacing: -.01em;
+  margin: 0; line-height: 1.2;
+}
 .gate h1 b { color: var(--gold); }
-.gate p { color: var(--text-2); font-size: 15px; margin-top: 10px; max-width: 320px; }
-.gate .gbtn {
-  margin-top: 32px; display: inline-flex; align-items: center; gap: 12px;
-  background: #fff; color: #1f1f1f; font-weight: 700; font-size: 15px;
-  padding: 13px 22px; border-radius: 999px; min-width: 260px; justify-content: center;
+.gate p {
+  color: var(--text-2); font-size: 14px; margin: 12px auto 0;
+  max-width: 320px; line-height: 1.6;
 }
+.gate .gbtn {
+  margin-top: 28px; display: inline-flex; align-items: center; gap: 12px;
+  background: #fff; color: #1f1f1f; font-weight: 700; font-size: 15px;
+  padding: 14px 24px; border-radius: 999px; min-width: 280px;
+  justify-content: center;
+  border: 1px solid #e5e5e5;
+  box-shadow: 0 4px 14px rgba(0,0,0,.18);
+  transition: transform .1s, box-shadow .15s, background .15s;
+  cursor: pointer;
+  font-family: inherit;
+}
+.gate .gbtn:hover { box-shadow: 0 6px 18px rgba(0,0,0,.22); }
 .gate .gbtn:active { transform: scale(.98); }
-.gate .gbtn .gico { width: 20px; height: 20px; }
-.gate .gbtn[disabled] { opacity: .6; }
-.gate .terms { color: var(--text-3); font-size: 12px; margin-top: 22px; max-width: 320px; }
+.gate .gbtn .gico { width: 22px; height: 22px; flex-shrink: 0; }
+.gate .gbtn[disabled] { opacity: .6; cursor: default; }
+.gate .terms {
+  color: var(--text-3); font-size: 11.5px; margin-top: 24px;
+  max-width: 320px; line-height: 1.55;
+}
 .gate-spinner { margin-top: 28px; }
 .gate-error {
   margin-top: 16px;
@@ -657,7 +684,7 @@ input, select { font-family: inherit; }
   border: 1px solid rgba(220, 60, 60, .4);
   color: #ffb4b4;
   font-size: 13px;
-  line-height: 1.5;
+  line-height: 1.55;
   padding: 10px 12px;
   border-radius: 12px;
 }
@@ -1599,26 +1626,37 @@ input, select { font-family: inherit; }
 
 /* ---------- Auth-required modal ---------- */
 .auth-required-card {
-  text-align: center; padding: 32px 24px; max-width: 360px;
+  text-align: center; padding: 32px 24px 24px; max-width: 380px;
+  display: flex; flex-direction: column; align-items: center;
 }
-.auth-required-header { margin-bottom: 24px; }
-.auth-logo { width: 64px; height: 64px; border-radius: 16px; margin-bottom: 16px; }
-.auth-title { font-size: 20px; font-weight: 700; margin-bottom: 8px; }
-.auth-desc { font-size: 14px; color: var(--text-2); line-height: 1.5; }
+.auth-required-header { margin-bottom: 24px; display: flex; flex-direction: column; align-items: center; width: 100%; }
+.auth-logo {
+  width: 72px; height: 72px; border-radius: 18px; margin: 0 auto 16px;
+  background: linear-gradient(160deg, #ffe9a8 0%, #f4c01f 60%, #b8860b 100%);
+  padding: 4px;
+  box-shadow: 0 8px 22px rgba(0,0,0,.28);
+}
+.auth-logo img { width: 100%; height: 100%; object-fit: contain; border-radius: 14px; }
+.auth-title { font-size: 20px; font-weight: 700; margin: 0 0 10px; }
+.auth-desc { font-size: 14px; color: var(--text-2); line-height: 1.6; margin: 0 0 4px; }
 .auth-google-btn {
   display: inline-flex; align-items: center; gap: 12px;
   background: #fff; color: #1f1f1f; font-weight: 700; font-size: 15px;
-  padding: 13px 22px; border-radius: 999px; width: 100%; justify-content: center;
-  border: none; cursor: pointer; margin-bottom: 12px;
-  transition: transform .1s;
+  padding: 14px 24px; border-radius: 999px; width: 100%; justify-content: center;
+  border: 1px solid #e5e5e5; cursor: pointer; margin: 0;
+  transition: transform .1s, box-shadow .15s;
   unicode-bidi: plaintext;
+  box-shadow: 0 4px 14px rgba(0,0,0,.18);
+  font-family: inherit;
 }
 /* Sign-in gate: keep the Google button white in both themes */
-.gate .auth-google-btn { width: auto; min-width: 260px; }
+.gate .auth-google-btn { width: auto; min-width: 280px; }
 .gate .gate-spinner.hidden { display: none; }
+.auth-google-btn:hover { box-shadow: 0 6px 18px rgba(0,0,0,.22); }
 .auth-google-btn:active { transform: scale(.98); }
-.auth-google-btn .gico { width: 20px; height: 20px; }
-.auth-cancel-btn { width: 100%; }
+.auth-google-btn .gico { width: 22px; height: 22px; flex-shrink: 0; }
+.auth-google-btn .gbtn-label { white-space: nowrap; }
+.auth-cancel-btn { width: 100%; margin-top: 10px; }
 .login-avatar {
   display: flex; align-items: center; justify-content: center;
   background: var(--surface-2); border-radius: 50%; width: 32px; height: 32px;

@@ -7,3 +7,4 @@ android/app/google-services.json
 *.apk
 *.jks
 *.keystore
+local.properties
