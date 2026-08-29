@@ -409,9 +409,54 @@ public class GSAndroid {
     }
 
     /**
-     * Called by PackageChangeReceiver when a package is fully removed.
-     * Notifies the web layer so the detail page can return to the install state.
+     * Re-opens the system installer for an APK that was already downloaded
+     * (e.g. user dismissed the installer the first time). The file lives under
+     * /Android/data/<pkg>/files/downloads/<filename>.
      */
+    @JavascriptInterface
+    public void openDownloadedApk(final String filename, final String slug, final String packageName) {
+        if (filename == null || filename.isEmpty()) {
+            emit(slug == null ? "" : slug, "failed", -1, "file_missing");
+            return;
+        }
+        activity.runOnUiThread(() -> {
+            try {
+                File dir = new File(activity.getExternalFilesDir(null), "downloads");
+                if (dir == null || !dir.exists()) {
+                    emit(slug, "failed", -1, "file_missing");
+                    return;
+                }
+                File file = new File(dir, filename);
+                if (!file.exists()) {
+                    emit(slug, "failed", -1, "file_missing");
+                    return;
+                }
+                installApk(file, slug, packageName);
+            } catch (Exception e) {
+                Log.e(TAG, "openDownloadedApk failed", e);
+                emit(slug, "failed", -1, "install_error");
+            }
+        });
+    }
+
+    /**
+     * Deletes a previously-downloaded APK file from the device.
+     */
+    @JavascriptInterface
+    public void deleteDownloadedApk(final String filename, final String slug) {
+        if (filename == null || filename.isEmpty()) return;
+        activity.runOnUiThread(() -> {
+            try {
+                File dir = new File(activity.getExternalFilesDir(null), "downloads");
+                if (dir == null || !dir.exists()) return;
+                File file = new File(dir, filename);
+                if (file.exists()) file.delete();
+            } catch (Exception e) {
+                Log.e(TAG, "deleteDownloadedApk failed", e);
+            }
+        });
+    }
+
     public void onPackageUninstalled(String uninstalledPackage) {
         if (uninstalledPackage == null || uninstalledPackage.isEmpty()) return;
         mainHandler.post(() -> emitPackageEvent(uninstalledPackage));

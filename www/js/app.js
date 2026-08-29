@@ -362,6 +362,23 @@
       }
       toast(t('غير متاح في هذا المتصفح'), 'info');
     }
+    // Open the system installer for a previously-downloaded APK file
+    // (lets the user retry installation if they dismissed the prompt).
+    function openDownloadedApk(a, filename) {
+      if (isNativeApp() && window.GSAndroid && typeof window.GSAndroid.openDownloadedApk === 'function') {
+        try {
+          window.GSAndroid.openDownloadedApk(filename || '', a.slug || '', a.package_name || '');
+          toast(t('جارٍ فتح مثبّت النظام…'), 'info');
+        } catch (e) { toast(t('تعذّر فتح الملف'), 'error'); }
+        return;
+      }
+      toast(t('غير متاح في هذا المتصفح'), 'info');
+    }
+    function deleteDownloadedApk(a, filename) {
+      if (isNativeApp() && window.GSAndroid && typeof window.GSAndroid.deleteDownloadedApk === 'function') {
+        try { window.GSAndroid.deleteDownloadedApk(filename || '', a.slug || ''); } catch (e) {}
+      }
+    }
     function showInstalledActions(a) {
       if (!isNativeApp()) return;
       removeInstalledActions();
@@ -370,6 +387,21 @@
           ico('play', 'icon'), t('فتح')),
         el('button', { class: 'btn btn-secondary btn-lg', type: 'button', onclick: () => uninstallInstalled(a) },
           ico('trash', 'icon'), t('إلغاء التثبيت')),
+      );
+      const anchor = document.querySelector('.detail .d-actions');
+      if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(bar, anchor.nextSibling);
+    }
+    // Show "open APK / delete file" actions after a download completes but
+    // before the package is actually installed (e.g. user dismissed the
+    // installer or installation is still pending).
+    function showDownloadedActions(a, filename) {
+      if (!isNativeApp()) return;
+      removeInstalledActions();
+      const bar = el('div', { class: 'installed-actions', id: 'gs-installed-actions' },
+        el('button', { class: 'btn btn-primary btn-lg', type: 'button', onclick: () => openDownloadedApk(a, filename) },
+          ico('download', 'icon'), t('تثبيت')),
+        el('button', { class: 'btn btn-secondary btn-lg', type: 'button', onclick: () => { deleteDownloadedApk(a, filename); removeInstalledActions(); showIdle(); toast(t('تم حذف ملف التحميل'), 'info'); } },
+          ico('trash', 'icon'), t('حذف الملف')),
       );
       const anchor = document.querySelector('.detail .d-actions');
       if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(bar, anchor.nextSibling);
@@ -422,6 +454,10 @@
         label.textContent = t('تم التنزيل، جارٍ التثبيت…');
         S.removeActiveDownload(app.slug);
         S.addToDownloadHistory(app);
+        // Also show the post-download actions bar immediately so the user can
+        // retry the install or delete the file if the system installer prompt
+        // was dismissed.
+        showDownloadedActions(app, filename);
         return;
       }
       if (status === 'installing') {

@@ -322,6 +322,10 @@ function featureCarousel(apps, opts = {}) {
 
   let idx = 0;
   let timer = null;
+  // Auto-advance is OFF by default — users complained that the carousel
+  // "scrolls by itself" which interrupted manual touch scrolling. Manual
+  // touch scroll + dots is the Google Play model.
+  const AUTO_ADVANCE = false;
 
   // --- Touch-scroll carousel ---
   // The track is a native horizontal scroller: momentum, edge resistance and
@@ -343,10 +347,11 @@ function featureCarousel(apps, opts = {}) {
     catch (e) { track.scrollLeft = clamped * slideWidth(); }
     setIdx(clamped);
   }
-  function go(i, manual) { goTo(i, true); if (manual) restart(); }
+  function go(i, manual) { goTo(i, true); if (manual && AUTO_ADVANCE) restart(); }
   function restart() {
     if (timer) clearInterval(timer);
-    if (list.length > 1) timer = setInterval(() => go(idx >= maxIndex() ? 0 : idx + 1), opts.interval || 4500);
+    if (!AUTO_ADVANCE || list.length <= 1) return;
+    timer = setInterval(() => go(idx >= maxIndex() ? 0 : idx + 1), opts.interval || 6000);
   }
   function paint() { goTo(idx, false); }
 
@@ -361,8 +366,17 @@ function featureCarousel(apps, opts = {}) {
     });
   }, { passive: true });
 
-  // Pause auto-advance while the user is touching the carousel.
-  track.addEventListener('touchstart', () => { if (timer) clearInterval(timer); }, { passive: true });
+  // Resume auto-advance (if enabled) after the user finishes touching.
+  let touchResumeTimer = null;
+  track.addEventListener('touchstart', () => {
+    if (timer) clearInterval(timer);
+    if (touchResumeTimer) clearTimeout(touchResumeTimer);
+  }, { passive: true });
+  track.addEventListener('touchend', () => {
+    if (!AUTO_ADVANCE) return;
+    if (touchResumeTimer) clearTimeout(touchResumeTimer);
+    touchResumeTimer = setTimeout(restart, 4000);
+  }, { passive: true });
   wrap.addEventListener('mouseenter', () => { if (timer) clearInterval(timer); });
   wrap.addEventListener('mouseleave', restart);
   paint();

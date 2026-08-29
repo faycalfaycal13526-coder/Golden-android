@@ -8,7 +8,7 @@
     }
   },
   "apiBase": "https://goldenstore-new.vercel.app",
-  "appVersion": "1.4",
+  "appVersion": "1.5",
   "android": {
     "allowMixedContent": false
   }

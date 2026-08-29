@@ -25,16 +25,21 @@
 
   const MULTIPART_THRESHOLD = 10 * 1024 * 1024; // 10 MB
 
-  function xhrPut(url, data, contentType, onProgress) {
+  function xhrPut(url, data, contentType, onProgress, timeoutMs) {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       xhr.open('PUT', url, true);
       if (contentType) xhr.setRequestHeader('Content-Type', contentType);
+      // Default timeout: 5 min for small files, 30 min for large parts.
+      // 0 means no timeout (default for XHR). We set it to ensure uploads
+      // don't hang silently forever on flaky mobile networks.
+      xhr.timeout = timeoutMs > 0 ? timeoutMs : (5 * 60 * 1000);
       if (onProgress) {
         xhr.upload.onprogress = (e) => {
           if (e.lengthComputable) onProgress(e.loaded, e.total);
         };
       }
+      xhr.ontimeout = () => reject(new Error('upload_timeout'));
       xhr.onload = () => {
         if (xhr.status >= 200 && xhr.status < 300) {
           const etag = xhr.getResponseHeader('ETag');
@@ -48,14 +53,18 @@
     });
   }
 
-  async function retryXhrPut(url, data, contentType, onProgress, maxRetries) {
+  async function retryXhrPut(url, data, contentType, onProgress, maxRetries, timeoutMs) {
     let lastErr;
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
-        return await xhrPut(url, data, contentType, onProgress);
+        return await xhrPut(url, data, contentType, onProgress, timeoutMs);
       } catch (err) {
         lastErr = err;
+        // Don't retry on 4xx (the presigned URL or its content-type is wrong,
+        // retrying won't fix that). Retry on network errors and 5xx.
+        if (err && err.message && /_4\d\d$/.test(err.message)) throw err;
         if (attempt < maxRetries) {
+          // Exponential backoff: 1s, 2s, 4s, 8s…
           await new Promise((r) => setTimeout(r, 1000 * Math.pow(2, attempt)));
         }
       }
@@ -96,7 +105,7 @@
 
     await retryXhrPut(url, file, contentType, (loaded, total) => {
       if (onProgress) onProgress(loaded / total);
-    }, 2);
+    }, 2, 30 * 60 * 1000);  // 30-min timeout for single PUT (large APKs)
     return key;
   }
 
@@ -129,7 +138,7 @@
 
         const etag = await retryXhrPut(partUrl, chunk, null, (loaded) => {
           if (onProgress) onProgress((totalUploaded + loaded) / file.size);
-        }, 3);
+        }, 3, 10 * 60 * 1000);  // 10-min timeout per 10MB part
 
         if (!etag) {
           throw new Error('upload_etag_missing');
