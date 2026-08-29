@@ -521,7 +521,7 @@
         markInstalledStored(app.slug);
         S.removeActiveDownload(app.slug);
         S.removeApkState(app.slug);
-        const devVer = S.installedVersionOnDevice(app.package_name || '');
+        const devVer = S.installedVersionOnDevice(app.package_name || '') || S.isSlugInstalled(app.slug);
         const hasUpdate = S.versionIsNewer(app.version_name || '', devVer);
         showInstalled(hasUpdate ? 'update' : 'open');
         showInstalledActions(app, { withOpen: !hasUpdate });
@@ -601,6 +601,7 @@
           icon_url: app.icon_url || null,
           developer: app.developer || '',
           size_bytes: app.size_bytes || 0,
+          package_name: app.package_name || '',
           progress: 0,
           status: 'downloading',
           started_at: Math.floor(Date.now() / 1000),
@@ -712,7 +713,11 @@
     // makes the page show "فتح / إلغاء التثبيت" instead of "تثبيت" after
     // returning to the store, and shows live progress for in-flight installs.
     function resolveInstallState() {
-      const deviceVer = S.installedVersionOnDevice(app.package_name || '');
+      // Device check first (package name from store metadata), then the
+      // native slug→package registry — which remembers REAL installs even
+      // when the store metadata package name is missing or wrong.
+      let deviceVer = S.installedVersionOnDevice(app.package_name || '');
+      if (!deviceVer) deviceVer = S.isSlugInstalled(app.slug);
       const live = S.getApkState(app.slug);
       if (deviceVer) {
         markInstalledStored(app.slug);

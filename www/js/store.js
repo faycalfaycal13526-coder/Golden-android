@@ -1117,6 +1117,15 @@ window.__gsDownloadStatesSnapshot = function (states) {
       }
       try { window.dispatchEvent(new CustomEvent('gs-apk-state', { detail: { slug, status, progress, message: st.filename || '' } })); } catch (e) {}
     });
+    // Native is the SOURCE OF TRUTH: prune web-side entries it no longer
+    // tracks (installs completed / cancelled while this page was closed).
+    // Without this, the library keeps showing "جارٍ التثبيت" forever.
+    const valid = new Set(Object.keys(states));
+    const apkMap = getApkStateMap();
+    Object.keys(apkMap).forEach((slug) => {
+      if (slug === 'app-update') return; // self-update flow tracks itself
+      if (!valid.has(slug)) { removeApkState(slug); removeActiveDownload(slug); }
+    });
     notifyActiveDownloads();
   } catch (e) { console.error('[statesSnapshot]', e); }
 };
@@ -1204,6 +1213,18 @@ function installedVersionOnDevice(packageName) {
   try {
     if (window.GSAndroid && typeof window.GSAndroid.isPackageInstalled === 'function') {
       return window.GSAndroid.isPackageInstalled(packageName) || '';
+    }
+  } catch (e) {}
+  return '';
+}
+// Slug-based installed check: the native registry remembers slug→package for
+// every real install, so this keeps فتح/إلغاء التثبيت correct even when the
+// store metadata package name is missing or wrong. Returns versionName or ''.
+function isSlugInstalled(slug) {
+  if (!isNativeApp() || !slug) return '';
+  try {
+    if (window.GSAndroid && typeof window.GSAndroid.isSlugInstalled === 'function') {
+      return window.GSAndroid.isSlugInstalled(slug) || '';
     }
   } catch (e) {}
   return '';
@@ -1441,7 +1462,7 @@ window.Store = {
   getActiveDownloads, setActiveDownload, updateActiveDownloadProgress, removeActiveDownload, onActiveDownloadsChange,
   getApkState, getApkStateMap, setApkState, removeApkState, onApkState, syncNativeStates,
   isInstalledStored, markInstalledStored, unmarkInstalledStored,
-  installedVersionOnDevice, versionIsNewer, cancelDownload,
+  installedVersionOnDevice, versionIsNewer, cancelDownload, isSlugInstalled,
   checkAppUpdate, showUpdateDialog,
 };
 

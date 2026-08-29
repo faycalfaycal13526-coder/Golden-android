@@ -110,12 +110,26 @@
     function paint() {
       paintQueued = false;
       const map = S.getApkStateMap ? S.getApkStateMap() : {};
-      const entries = Object.values(map).filter((st) => st && st.slug);
+      let entries = Object.values(map).filter((st) => st && st.slug);
       section.innerHTML = '';
       if (!entries.length) return;
 
       const historyById = {};
       S.getDownloadHistory().forEach((h) => { historyById[h.slug] = h; });
+
+      // Self-heal FIRST: an "installing" entry whose package is REALLY
+      // installed (its event was lost while navigating between pages) is
+      // dropped right away instead of sticking on "جارٍ التثبيت…" forever.
+      entries = entries.filter((st) => {
+        if (st.status !== 'installing') return true;
+        const pkg = st.package_name || (historyById[st.slug] || {}).package_name || '';
+        const ver = (pkg && S.installedVersionOnDevice(pkg)) || S.isSlugInstalled(st.slug);
+        if (!ver) return true;
+        S.removeApkState(st.slug);
+        S.removeActiveDownload(st.slug);
+        return false;
+      });
+      if (!entries.length) return;
 
       section.append(el('div', { class: 'live-dls-title' },
         ico('download', 'icon'),

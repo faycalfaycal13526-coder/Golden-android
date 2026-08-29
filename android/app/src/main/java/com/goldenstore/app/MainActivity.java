@@ -281,8 +281,14 @@ public class MainActivity extends BridgeActivity {
         filter.addAction(Intent.ACTION_PACKAGE_REPLACED);
         filter.addAction(Intent.ACTION_PACKAGE_REMOVED);
         filter.addDataScheme("package");
+        // IMPORTANT: PACKAGE_ADDED/REMOVED/REPLACED are protected system
+        // broadcasts — only the OS can send them. On Android 13/14 several
+        // vendor builds do NOT deliver them to receivers registered with
+        // RECEIVER_NOT_EXPORTED, which is why "جارٍ التثبيت" never flipped to
+        // فتح/إلغاء التثبيت. RECEIVER_EXPORTED is required (and safe: the
+        // platform rejects any non-system sender of these actions).
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            ContextCompat.registerReceiver(this, packageReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED);
+            ContextCompat.registerReceiver(this, packageReceiver, filter, ContextCompat.RECEIVER_EXPORTED);
         } else {
             registerReceiver(packageReceiver, filter);
         }

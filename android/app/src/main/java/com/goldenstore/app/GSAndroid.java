@@ -86,6 +86,10 @@ public class GSAndroid {
     private final Map<String, DownloadState> active = new ConcurrentHashMap<>();
     private final Map<String, JSONObject> persisted = new ConcurrentHashMap<>();
     private final Map<String, Bitmap> iconCache = new ConcurrentHashMap<>();
+    // Metadata snapshot for terminal notifications: the state maps are cleaned
+    // up right after emit(), but the "تم التثبيت" notification is built
+    // asynchronously and still needs appName/icon/package afterwards.
+    private final Map<String, String[]> notifMetaStash = new ConcurrentHashMap<>();
     private SharedPreferences installedPrefs;
     private File stateFile;
     private boolean stateLoaded = false;
@@ -411,13 +415,22 @@ public class GSAndroid {
             conn = null;
 
             state.status = "downloaded";
+            // Resolve the REAL package name from the APK itself. Store metadata
+            // can be empty or wrong; install detection depends on an exact
+            // match with what the system installer actually registers, so the
+            // APK file is the ground truth (Google Play never trusts labels).
+            String realPkg = readApkPackageName(state.file);
+            if (realPkg != null && !realPkg.isEmpty()) {
+                state.packageName = realPkg;
+            }
             persistState(state);
+            final String resolvedPkg = state.packageName;
             mainHandler.post(() -> {
                 emit(slug, "downloaded", 1.0, state.filename);
                 emit(slug, "installing", 1.0, null);
                 state.status = "installing";
                 persistState(state);
-                installApk(state.file, slug, packageName);
+                installApk(state.file, slug, resolvedPkg);
             });
         } catch (Exception e) {
             Log.e(TAG, "Download failed for " + slug, e);
@@ -661,10 +674,17 @@ public class GSAndroid {
                     return;
                 }
                 JSONObject p = persistedState(slug);
+                // The APK file is ground truth: prefer the real package name
+                // read from it, fall back to what the caller supplied.
+                String realPkg = readApkPackageName(file);
+                if (realPkg == null || realPkg.isEmpty()) realPkg = packageName;
+                if (realPkg != null && !realPkg.isEmpty()) {
+                    try { p.put("package_name", realPkg); } catch (Exception ignore) {}
+                }
                 try { p.put("status", "installing"); } catch (Exception ignore) {}
                 savePersistedStates();
                 emit(slug, "installing", 1.0, null);
-                installApk(file, slug, packageName);
+                installApk(file, slug, realPkg);
             } catch (Exception e) {
                 Log.e(TAG, "openDownloadedApk failed", e);
                 emit(slug, "failed", -1, "install_error");
@@ -708,37 +728,68 @@ public class GSAndroid {
     public void onPackageInstalled(String installedPackage) {
         if (installedPackage == null || installedPackage.isEmpty()) return;
 
-        // Persist the installed registry (slug -> package) so the web layer
-        // keeps the "installed" badge after restarts, even before any live
-        // PackageManager probe.
-        for (Map.Entry<String, JSONObject> e : persisted.entrySet()) {
-            JSONObject p = e.getValue();
-            if (installedPackage.equals(p.optString("package_name", ""))) {
-                installedPrefs.edit().putString(e.getKey(), installedPackage).apply();
-            }
-        }
-
+        // 1) Match live in-memory download states by package name. When the
+        //    state has no package name (legacy/broken store metadata), read
+        //    the REAL one from the downloaded APK file — the file is truth.
         for (Map.Entry<String, DownloadState> entry : active.entrySet()) {
             DownloadState state = entry.getValue();
-            if (!state.installed && installedPackage.equals(state.packageName)) {
-                state.installed = true;
-                state.status = "installed";
-                final String slug = state.slug;
-                mainHandler.post(() -> {
-                    emit(slug, "installed", 1.0, null);
-                    // Install finished — tidy up like Google Play: drop the
-                    // tracked state and delete the downloaded APK file.
-                    DownloadState st = active.get(slug);
-                    if (st != null && st.file != null && st.file.exists()) {
-                        st.file.delete();
-                    }
-                    persisted.remove(slug);
-                    savePersistedStates();
-                    active.remove(slug);
-                });
+            if (state.installed) continue;
+            String stPkg = state.packageName;
+            if (stPkg == null || stPkg.isEmpty()) {
+                stPkg = readApkPackageName(state.file);
+                if (stPkg != null && !stPkg.isEmpty()) state.packageName = stPkg;
+            }
+            if (installedPackage.equals(stPkg)) {
+                markStateInstalled(state.slug, installedPackage);
                 return;
             }
         }
+
+        // 2) Match persisted (disk) states too — covers the case where the
+        //    process died/restarted while the system installer was open.
+        for (Map.Entry<String, JSONObject> e : persisted.entrySet()) {
+            JSONObject p = e.getValue();
+            String pkg = p.optString("package_name", "");
+            if (pkg.isEmpty()) {
+                pkg = readApkPackageName(downloadFile(p.optString("filename", "")));
+            }
+            if (installedPackage.equals(pkg)) {
+                final String s = e.getKey();
+                installedPrefs.edit().putString(s, installedPackage).apply();
+                persisted.remove(s);
+                savePersistedStates();
+                mainHandler.post(() -> emit(s, "installed", 1.0, null));
+                return;
+            }
+        }
+    }
+
+    /**
+     * Marks a slug as successfully installed and cleans up like Google Play:
+     * removes the tracked state, deletes the downloaded APK file and pushes
+     * the "installed" event to the web layer (button becomes فتح/إلغاء).
+     */
+    private void markStateInstalled(final String slug, final String packageName) {
+        DownloadState state = active.get(slug);
+        if (state != null) {
+            state.installed = true;
+            state.status = "installed";
+        }
+        if (packageName != null && !packageName.isEmpty()) {
+            installedPrefs.edit().putString(slug, packageName).apply();
+        }
+        mainHandler.post(() -> {
+            emit(slug, "installed", 1.0, null);
+            // Install finished — tidy up like Google Play: drop the tracked
+            // state and delete the downloaded APK file.
+            DownloadState st = active.get(slug);
+            if (st != null && st.file != null && st.file.exists()) {
+                st.file.delete();
+            }
+            persisted.remove(slug);
+            savePersistedStates();
+            active.remove(slug);
+        });
     }
 
     /* ------------------------------------------------------------------
@@ -759,10 +810,32 @@ public class GSAndroid {
             Map.Entry<String, JSONObject> e = it.next();
             JSONObject p = e.getValue();
             String status = p.optString("status", "");
-            String pkg = p.optString("package_name", "");
             String slug = e.getKey();
             if ("installed".equals(status)) { it.remove(); dirty = true; continue; }
-            if (pkg.isEmpty()) continue;
+            String pkg = p.optString("package_name", "");
+            // Unknown package: 1) the installed-registry (slug→package built
+            // from real installs), 2) the downloaded APK file itself.
+            if (pkg.isEmpty()) {
+                String reg = installedPrefs.getString(slug, "");
+                if (reg != null && !reg.isEmpty()) pkg = reg;
+            }
+            if (pkg.isEmpty()) {
+                String real = readApkPackageName(downloadFile(p.optString("filename", "")));
+                if (real != null && !real.isEmpty()) pkg = real;
+            }
+            if (pkg.isEmpty()) {
+                // No package name anywhere and nothing to verify: this state
+                // can never be resolved on the device. Drop it (with a UI
+                // reset) instead of showing "جارٍ التثبيت" forever.
+                if ("installing".equals(status) || "downloaded".equals(status)) {
+                    it.remove();
+                    dirty = true;
+                    final String s = slug;
+                    mainHandler.post(() -> emit(s, "failed", -1, "file_missing"));
+                }
+                continue;
+            }
+            try { p.put("package_name", pkg); } catch (Exception ignore) {}
             boolean present = !isPackageInstalledInternal(pkg).isEmpty();
             if (present) {
                 installedPrefs.edit().putString(slug, pkg).apply();
@@ -774,7 +847,8 @@ public class GSAndroid {
                 try { p.put("status", "downloaded"); } catch (Exception ignore) {}
                 dirty = true;
                 final String s = slug;
-                mainHandler.post(() -> emit(s, "downloaded", 1.0, p.optString("filename", "")));
+                final String fn = p.optString("filename", "");
+                mainHandler.post(() -> emit(s, "downloaded", 1.0, fn));
             }
         }
         if (dirty) savePersistedStates();
@@ -821,6 +895,60 @@ public class GSAndroid {
             PackageInfo info = activity.getPackageManager().getPackageInfo(packageName, 0);
             if (info == null) return "";
             return info.versionName != null ? info.versionName : "installed";
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    /**
+     * Slug-based installed check for the web layer. Looks up the slug→package
+     * registry (built from REAL installs) and verifies the package is still
+     * present on the device. This is the fallback that keeps فتح/إلغاء التثبيت
+     * correct even when the store metadata package name is missing or wrong.
+     * Returns the installed versionName, or "" when not installed.
+     */
+    @JavascriptInterface
+    public String isSlugInstalled(final String slug) {
+        if (slug == null || slug.isEmpty()) return "";
+        try {
+            String pkg = installedPrefs.getString(slug, "");
+            if (pkg == null || pkg.isEmpty()) return "";
+            String ver = isPackageInstalledInternal(pkg);
+            if (ver.isEmpty()) {
+                // Stale registry entry — the app was removed outside the store.
+                installedPrefs.edit().remove(slug).apply();
+            }
+            return ver;
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    /** Resolves the downloads directory file, or null when it doesn't exist. */
+    private File downloadFile(String filename) {
+        try {
+            if (filename == null || filename.isEmpty()) return null;
+            File dir = new File(activity.getExternalFilesDir(null), "downloads");
+            if (dir == null) return null;
+            File f = new File(dir, filename);
+            return f.exists() ? f : null;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /**
+     * Reads the REAL package name out of an APK file on disk. This is the
+     * ground truth for install tracking — never rely on the store's label.
+     */
+    private String readApkPackageName(File file) {
+        if (file == null || !file.exists()) return "";
+        try {
+            PackageManager pm = activity.getPackageManager();
+            if (pm == null) return "";
+            PackageInfo info = pm.getPackageArchiveInfo(file.getAbsolutePath(), 0);
+            if (info == null || info.packageName == null) return "";
+            return info.packageName;
         } catch (Throwable t) {
             return "";
         }
@@ -926,6 +1054,24 @@ public class GSAndroid {
         // user sees live download/install progress outside the app (and an
         // "installed / open" notification at the end) — Google Play style.
         if (slug != null && !slug.isEmpty()) {
+            if ("installed".equals(status)) {
+                // Capture the app metadata NOW, before the caller cleans up
+                // the tracked state (the notification builds async later).
+                String[] meta = null;
+                DownloadState st = active.get(slug);
+                if (st != null) {
+                    meta = new String[]{
+                            st.appName == null ? "" : st.appName,
+                            st.iconUrl == null ? "" : st.iconUrl,
+                            st.packageName == null ? "" : st.packageName };
+                } else {
+                    JSONObject p = persisted.get(slug);
+                    if (p != null) {
+                        meta = new String[]{ p.optString("app_name", ""), p.optString("icon_url", ""), p.optString("package_name", "") };
+                    }
+                }
+                if (meta != null) notifMetaStash.put(slug, meta);
+            }
             updateNotificationAsync(slug, status, progress);
         }
         if (webView == null) return;
@@ -1008,6 +1154,12 @@ public class GSAndroid {
     }
 
     private String metaOf(String slug, String key) {
+        String[] stash = notifMetaStash.get(slug);
+        if (stash != null && stash.length == 3) {
+            if ("app_name".equals(key)) return stash[0] == null ? "" : stash[0];
+            if ("icon_url".equals(key)) return stash[1] == null ? "" : stash[1];
+            if ("package_name".equals(key)) return stash[2] == null ? "" : stash[2];
+        }
         DownloadState st = active.get(slug);
         if (st != null) {
             if ("app_name".equals(key)) return st.appName == null ? "" : st.appName;
@@ -1063,6 +1215,7 @@ public class GSAndroid {
 
             if ("cancelled".equals(status) || "failed".equals(status)) {
                 nm.cancel(notifId(slug));
+                notifMetaStash.remove(slug);
                 return;
             }
             if (!canPostNotifications()) return;
@@ -1099,6 +1252,7 @@ public class GSAndroid {
                     } catch (Exception ignore) {}
                 }
                 nm.notify(id, b.build());
+                notifMetaStash.remove(slug); // terminal state — stash consumed
                 return;
             }
 

@@ -1,15 +1,15 @@
 {
-  "appId": "com.goldenstore.app",
-  "appName": "Golden Store New",
-  "webDir": "www",
-  "plugins": {
-    "CapacitorHttp": {
-      "enabled": true
-    }
-  },
-  "apiBase": "https://goldenstore-new.vercel.app",
-  "appVersion": "1.7",
-  "android": {
-    "allowMixedContent": false
-  }
+	"appId": "com.goldenstore.app",
+	"appName": "Golden Store New",
+	"webDir": "www",
+	"plugins": {
+		"CapacitorHttp": {
+			"enabled": true
+		}
+	},
+	"apiBase": "https://goldenstore-new.vercel.app",
+	"appVersion": "1.8",
+	"android": {
+		"allowMixedContent": false
+	}
 }
