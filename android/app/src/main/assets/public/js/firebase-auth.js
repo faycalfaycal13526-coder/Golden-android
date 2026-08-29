@@ -2,7 +2,7 @@
 // Uses Firebase compat SDK loaded from CDN in HTML
 
 var FIREBASE_CONFIG = {
-  apiKey: "AIzaSyCBG4zQSAeiE5cui3rFVaDEAhwF45EzPQU",
+  apiKey: "AIzaSy…zPQU",
   authDomain: "golden-store-40dd6.firebaseapp.com",
   databaseURL: "https://golden-store-40dd6-default-rtdb.europe-west1.firebasedatabase.app",
   projectId: "golden-store-40dd6",

@@ -235,7 +235,7 @@
     'لمحة عن هذا التطبيق': { en: 'About this app', fr: 'À propos de cette app', es: 'Sobre esta app' },
     'تنزيلات': { en: 'Downloads', fr: 'Téléchargements', es: 'Descargas' },
     'أندرويد': { en: 'Android', fr: 'Android', es: 'Android' },
-    'شريحة': { en: 'Chip', fr: 'Puce', es: 'Chip' },
+    'شريحة': { en: 'Slide', fr: 'Diapositive', es: 'Diapositiva' },
     'تطبيق': { en: 'app', fr: 'application', es: 'aplicación' },
     'يحتوي على عمليات شراء داخل التطبيق': { en: 'Contains in-app purchases', fr: 'Contient des achats intégrés', es: 'Contiene compras dentro de la app' },
     'جار التحميل…': { en: 'Downloading…', fr: 'Téléchargement…', es: 'Descargando…' },
