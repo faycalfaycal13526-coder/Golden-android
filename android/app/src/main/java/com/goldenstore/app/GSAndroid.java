@@ -1,7 +1,9 @@
 package com.goldenstore.app;
 
+import android.app.Activity;
 import android.content.ActivityNotFoundException;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.Signature;
@@ -13,8 +15,6 @@ import android.util.Log;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebView;
 import androidx.core.content.FileProvider;
-import java.security.MessageDigest;
-import java.util.Arrays;
 import com.google.android.gms.auth.api.signin.GoogleSignIn;
 import com.google.android.gms.auth.api.signin.GoogleSignInAccount;
 import com.google.android.gms.auth.api.signin.GoogleSignInClient;
@@ -23,10 +23,16 @@ import com.google.android.gms.common.api.ApiException;
 import com.google.android.gms.common.api.CommonStatusCodes;
 import com.google.android.gms.tasks.Task;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.Arrays;
+import java.util.Iterator;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -34,37 +40,70 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import org.json.JSONObject;
 
+/**
+ * Golden Store — native JS bridge.
+ *
+ * v1.6 (professional install pipeline, Google Play style):
+ *  - Real install state straight from the device PackageManager
+ *    (isPackageInstalled returns the installed versionName synchronously).
+ *  - Persistent download/install state: survives page navigation, app restarts
+ *    and process death (states are saved to gs_download_states.json).
+ *  - Automatic resume of interrupted downloads (HTTP Range) when the app is
+ *    reopened, so the user always finds the live progress or completion.
+ *  - cancelDownload() so downloads can be cancelled like on Google Play.
+ *  - onAppResumed() reconciliation: when the user comes back (e.g. after the
+ *    system installer closed), states are re-checked against the device and
+ *    pushed to the web layer ("installed" / retry "downloaded" states).
+ */
 public class GSAndroid {
     private static final String TAG = "GSAndroid";
     private static final int RC_SIGN_IN = 9002;
+    private static final String STATE_FILE = "gs_download_states.json";
+    private static final String INSTALLED_PREFS = "gs_installed_apps";
 
     private final MainActivity activity;
     private final WebView webView;
     private final Handler mainHandler;
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final Map<String, DownloadState> active = new ConcurrentHashMap<>();
+    private final Map<String, JSONObject> persisted = new ConcurrentHashMap<>();
+    private SharedPreferences installedPrefs;
+    private File stateFile;
+    private boolean stateLoaded = false;
     private GoogleSignInClient googleSignInClient;
 
     private static class DownloadState {
         String slug;
         String packageName;
         String filename;
+        String url;
         File file;
+        long downloadedBytes = 0;
+        long totalBytes = 0;
         long lastProgressTime = 0;
+        long lastPersistTime = 0;
         double lastProgress = -1;
         boolean cancelled = false;
         boolean installed = false;
+        String status = "downloading"; // downloading | downloaded | installing | installed
     }
 
     public GSAndroid(MainActivity activity, WebView webView) {
         this.activity = activity;
         this.webView = webView;
         this.mainHandler = new Handler(Looper.getMainLooper());
+        this.installedPrefs = activity.getSharedPreferences(INSTALLED_PREFS, Activity.MODE_PRIVATE);
+        this.stateFile = new File(activity.getFilesDir(), STATE_FILE);
+        loadPersistedStates();
     }
 
     public void setGoogleSignInClient(GoogleSignInClient client) {
         this.googleSignInClient = client;
     }
+
+    /* ------------------------------------------------------------------
+     * Google Sign-In plumbing (unchanged behaviour)
+     * ------------------------------------------------------------------ */
 
     @JavascriptInterface
     public void signInWithGoogle() {
@@ -143,22 +182,133 @@ public class GSAndroid {
         return JSONObject.quote(s != null ? s : "");
     }
 
+    /* ------------------------------------------------------------------
+     * Real install state (device PackageManager = source of truth)
+     * ------------------------------------------------------------------ */
+
+    /**
+     * Synchronous device check used by the web layer when rendering an app
+     * page. Returns the installed versionName when the package is present on
+     * the device, or "" when it is not installed. Because @JavascriptInterface
+     * methods run on a dedicated thread, this is safe to call inline from JS.
+     */
+    @JavascriptInterface
+    public String isPackageInstalled(final String packageName) {
+        if (packageName == null || packageName.isEmpty()) return "";
+        try {
+            PackageManager pm = activity.getPackageManager();
+            PackageInfo info = pm.getPackageInfo(packageName, 0);
+            if (info == null) return "";
+            return info.versionName != null ? info.versionName : "installed";
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    /**
+     * Snapshot of every tracked download/install state, as JSON. The web layer
+     * calls this on every page load so progress, "downloaded" and "installed"
+     * states survive navigation and app restarts.
+     */
+    @JavascriptInterface
+    public String getDownloadStates() {
+        ensureReconciled();
+        JSONObject out = new JSONObject();
+        try {
+            // Merge persisted states first…
+            for (Map.Entry<String, JSONObject> e : persisted.entrySet()) {
+                try { out.put(e.getKey(), new JSONObject(e.getValue().toString())); } catch (Exception ignore) {}
+            }
+            // …then overlay any live in-memory state (fresher progress).
+            for (Map.Entry<String, DownloadState> e : active.entrySet()) {
+                out.put(e.getKey(), stateToJson(e.getValue()));
+            }
+        } catch (Exception ignore) {}
+        return out.toString();
+    }
+
+    /**
+     * Cancels a running download and forgets its partial file + state.
+     */
+    @JavascriptInterface
+    public void cancelDownload(final String slug) {
+        if (slug == null || slug.isEmpty()) return;
+        DownloadState state = active.get(slug);
+        if (state != null) {
+            state.cancelled = true;
+        } else {
+            // Not running: just drop the persisted entry + partial file.
+            JSONObject p = persisted.get(slug);
+            if (p != null) {
+                try {
+                    String filename = p.optString("filename", "");
+                    if (!filename.isEmpty()) deleteDownloadFile(filename);
+                } catch (Exception ignore) {}
+                persisted.remove(slug);
+                savePersistedStates();
+            }
+            mainHandler.post(() -> emit(slug, "cancelled", -1, null));
+        }
+    }
+
+    /**
+     * Called by MainActivity.onResume(). Reconciles every state against the
+     * real device and pushes a fresh snapshot to the current web page. This is
+     * what makes progress/status "live" across app exits and installer round
+     * trips.
+     */
+    public void onAppResumed() {
+        ensureReconciled();
+        mainHandler.post(this::pushAllStates);
+        autoResumeInterrupted();
+    }
+
+    /* ------------------------------------------------------------------
+     * Download pipeline
+     * ------------------------------------------------------------------ */
+
     @JavascriptInterface
     public void downloadApk(final String url, final String filename, final String slug, final String packageName) {
         if (url == null || url.isEmpty() || slug == null || slug.isEmpty()) {
-            emit(slug, "failed", -1);
+            emit(slug, "failed", -1, null);
             return;
         }
-        executor.execute(() -> startDownload(url, filename, slug, packageName));
+        // Never start the same download twice (prevents gesture/duplicate conflicts).
+        if (active.containsKey(slug)) return;
+        executor.execute(() -> startDownload(url, filename, slug, packageName, true));
     }
 
-    private void startDownload(String url, String filename, String slug, String packageName) {
+    private void startDownload(String url, String filename, String slug, String packageName, boolean allowResume) {
         DownloadState state = new DownloadState();
         state.slug = slug;
         state.packageName = packageName;
         state.filename = filename;
+        state.url = url;
+        state.status = "downloading";
         active.put(slug, state);
+
+        File dir = new File(activity.getExternalFilesDir(null), "downloads");
+        if (dir == null) dir = new File(activity.getFilesDir(), "downloads");
+        if (!dir.exists()) dir.mkdirs();
+        String safeFile = (filename != null && !filename.isEmpty()) ? filename : (slug + ".apk");
+        state.file = new File(dir, safeFile);
+
+        long resumeFrom = 0;
+        if (allowResume) {
+            JSONObject prev = persisted.get(slug);
+            if (prev != null && state.file.exists() && state.file.length() > 0
+                    && state.file.length() < (prev.optLong("total_bytes", 0))) {
+                // Only resume when the stored bytes match the partial file size.
+                if (prev.optLong("downloaded_bytes", -1) == state.file.length()) {
+                    resumeFrom = state.file.length();
+                    state.downloadedBytes = resumeFrom;
+                    state.totalBytes = prev.optLong("total_bytes", 0);
+                }
+            }
+        }
+
         HttpURLConnection conn = null;
+        boolean appending = resumeFrom > 0;
         try {
             String downloadUrl = appendStreamParam(url);
             conn = (HttpURLConnection) new URL(downloadUrl).openConnection();
@@ -166,56 +316,86 @@ public class GSAndroid {
             conn.setConnectTimeout(30000);
             conn.setReadTimeout(0);
             conn.setRequestProperty("User-Agent", "GoldenStoreApp Android");
+            if (appending) {
+                conn.setRequestProperty("Range", "bytes=" + resumeFrom + "-");
+            }
             int responseCode = conn.getResponseCode();
             if (responseCode >= 400) {
                 throw new Exception("HTTP " + responseCode);
             }
+            boolean serverResumed = (responseCode == HttpURLConnection.HTTP_PARTIAL);
+            if (appending && !serverResumed) {
+                // Server ignored the Range header — restart from scratch.
+                appending = false;
+                state.downloadedBytes = 0;
+            }
+
             long total = conn.getContentLengthLong();
+            if (serverResumed) total += resumeFrom;
+            state.totalBytes = total;
+            if (total > 0) {
+                JSONObject p = persistedState(slug);
+                try { p.put("total_bytes", total); } catch (Exception ignore) {}
+            }
+
             InputStream in = conn.getInputStream();
-            File dir = new File(activity.getExternalFilesDir(null), "downloads");
-            if (dir == null) dir = new File(activity.getFilesDir(), "downloads");
-            if (!dir.exists()) dir.mkdirs();
-            String safeFile = (filename != null && !filename.isEmpty()) ? filename : (slug + ".apk");
-            state.file = new File(dir, safeFile);
-            FileOutputStream out = new FileOutputStream(state.file);
-            byte[] buffer = new byte[8192];
-            long downloaded = 0;
+            OutputStream out = new FileOutputStream(state.file, appending);
+            byte[] buffer = new byte[16384];
+            long downloaded = state.downloadedBytes;
             int read;
             while ((read = in.read(buffer)) != -1) {
-                out.write(buffer, 0, read);
-                downloaded += read;
                 if (state.cancelled) {
-                    out.close();
-                    in.close();
+                    try { out.close(); in.close(); } catch (Exception ignore) {}
                     state.file.delete();
                     active.remove(slug);
+                    persisted.remove(slug);
+                    savePersistedStates();
+                    mainHandler.post(() -> emit(slug, "cancelled", -1, null));
                     return;
                 }
+                out.write(buffer, 0, read);
+                downloaded += read;
+                state.downloadedBytes = downloaded;
                 double progress = total > 0 ? (double) downloaded / total : -1;
                 long now = System.currentTimeMillis();
                 if (now - state.lastProgressTime > 200 || Math.abs(progress - state.lastProgress) > 0.01 || progress == 1.0) {
                     state.lastProgressTime = now;
                     state.lastProgress = progress;
                     final double p = progress;
-                    mainHandler.post(() -> emit(slug, "downloading", p));
+                    mainHandler.post(() -> emit(slug, "downloading", p, null));
+                }
+                // Persist resumable progress at most every 2 seconds.
+                if (now - state.lastPersistTime > 2000) {
+                    state.lastPersistTime = now;
+                    persistState(state);
                 }
             }
-            out.close();
-            in.close();
+            try { out.close(); in.close(); } catch (Exception ignore) {}
             conn.disconnect();
             conn = null;
 
-            active.put(slug, state);
+            state.status = "downloaded";
+            persistState(state);
             mainHandler.post(() -> {
-                emit(slug, "downloaded", 1.0);
-                emit(slug, "installing", 1.0);
+                emit(slug, "downloaded", 1.0, state.filename);
+                emit(slug, "installing", 1.0, null);
+                state.status = "installing";
+                persistState(state);
                 installApk(state.file, slug, packageName);
             });
         } catch (Exception e) {
             Log.e(TAG, "Download failed for " + slug, e);
             if (conn != null) conn.disconnect();
             active.remove(slug);
-            mainHandler.post(() -> emit(slug, "failed", -1));
+            // Keep the partial file + progress so the next attempt can resume.
+            if (state.downloadedBytes > 0) {
+                state.status = "downloading";
+                persistState(state);
+            } else {
+                persisted.remove(slug);
+                savePersistedStates();
+            }
+            mainHandler.post(() -> emit(slug, "failed", -1, null));
         }
     }
 
@@ -223,6 +403,10 @@ public class GSAndroid {
         if (url.contains("stream=1")) return url;
         return url + (url.contains("?") ? "&" : "?") + "stream=1";
     }
+
+    /* ------------------------------------------------------------------
+     * Install step
+     * ------------------------------------------------------------------ */
 
     private void installApk(File file, String slug, String packageName) {
         if (file == null || !file.exists()) {
@@ -239,6 +423,8 @@ public class GSAndroid {
             Log.e(TAG, signatureError);
             file.delete();
             active.remove(slug);
+            persisted.remove(slug);
+            savePersistedStates();
             emit(slug, "failed", -1, signatureError);
             return;
         }
@@ -353,9 +539,13 @@ public class GSAndroid {
     public void onInstallPermissionDenied(String slug) {
         if (slug != null) {
             active.remove(slug);
-            emit(slug, "failed", -1);
+            emit(slug, "failed", -1, "permission_denied");
         }
     }
+
+    /* ------------------------------------------------------------------
+     * Open / uninstall / re-install helpers
+     * ------------------------------------------------------------------ */
 
     /**
      * Opens an installed app by its package name (launches the launcher's main
@@ -365,23 +555,23 @@ public class GSAndroid {
     @JavascriptInterface
     public void openInstalledApp(final String packageName, final String slug) {
         if (packageName == null || packageName.isEmpty()) {
-            emit(slug == null ? "" : slug, "open_failed", -1);
+            emit(slug == null ? "" : slug, "open_failed", -1, null);
             return;
         }
         activity.runOnUiThread(() -> {
             try {
                 Intent intent = activity.getPackageManager().getLaunchIntentForPackage(packageName);
                 if (intent == null) {
-                    emit(slug == null ? "" : slug, "open_failed", -1);
+                    emit(slug == null ? "" : slug, "open_failed", -1, null);
                     return;
                 }
                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                 activity.startActivity(intent);
             } catch (ActivityNotFoundException e) {
-                emit(slug == null ? "" : slug, "open_failed", -1);
+                emit(slug == null ? "" : slug, "open_failed", -1, null);
             } catch (Exception e) {
                 Log.e(TAG, "openInstalledApp failed for " + packageName, e);
-                emit(slug == null ? "" : slug, "open_failed", -1);
+                emit(slug == null ? "" : slug, "open_failed", -1, null);
             }
         });
     }
@@ -401,6 +591,9 @@ public class GSAndroid {
                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                 activity.startActivity(intent);
                 if (packageName.equals(activity.getPackageName())) return; // never mark our own app removed preemptively
+                // Drop the slug(s) mapped to this package from the installed
+                // registry immediately so the UI flips back to "تثبيت".
+                removeInstalledRegistryByPackage(packageName);
                 emitPackageEvent(packageName);
             } catch (Exception e) {
                 Log.e(TAG, "uninstallApp failed for " + packageName, e);
@@ -431,6 +624,10 @@ public class GSAndroid {
                     emit(slug, "failed", -1, "file_missing");
                     return;
                 }
+                JSONObject p = persistedState(slug);
+                try { p.put("status", "installing"); } catch (Exception ignore) {}
+                savePersistedStates();
+                emit(slug, "installing", 1.0, null);
                 installApk(file, slug, packageName);
             } catch (Exception e) {
                 Log.e(TAG, "openDownloadedApk failed", e);
@@ -444,39 +641,245 @@ public class GSAndroid {
      */
     @JavascriptInterface
     public void deleteDownloadedApk(final String filename, final String slug) {
-        if (filename == null || filename.isEmpty()) return;
-        activity.runOnUiThread(() -> {
-            try {
-                File dir = new File(activity.getExternalFilesDir(null), "downloads");
-                if (dir == null || !dir.exists()) return;
-                File file = new File(dir, filename);
-                if (file.exists()) file.delete();
-            } catch (Exception e) {
-                Log.e(TAG, "deleteDownloadedApk failed", e);
-            }
-        });
+        deleteDownloadFile(filename);
+        if (slug != null && !slug.isEmpty()) {
+            persisted.remove(slug);
+            savePersistedStates();
+        }
     }
+
+    private void deleteDownloadFile(String filename) {
+        try {
+            File dir = new File(activity.getExternalFilesDir(null), "downloads");
+            if (dir == null || !dir.exists()) return;
+            File file = new File(dir, filename);
+            if (file.exists()) file.delete();
+        } catch (Exception e) {
+            Log.e(TAG, "deleteDownloadFile failed", e);
+        }
+    }
+
+    /* ------------------------------------------------------------------
+     * Package broadcast hooks (installed / removed)
+     * ------------------------------------------------------------------ */
 
     public void onPackageUninstalled(String uninstalledPackage) {
         if (uninstalledPackage == null || uninstalledPackage.isEmpty()) return;
+        removeInstalledRegistryByPackage(uninstalledPackage);
         mainHandler.post(() -> emitPackageEvent(uninstalledPackage));
     }
 
     public void onPackageInstalled(String installedPackage) {
         if (installedPackage == null || installedPackage.isEmpty()) return;
+
+        // Persist the installed registry (slug -> package) so the web layer
+        // keeps the "installed" badge after restarts, even before any live
+        // PackageManager probe.
+        for (Map.Entry<String, JSONObject> e : persisted.entrySet()) {
+            JSONObject p = e.getValue();
+            if (installedPackage.equals(p.optString("package_name", ""))) {
+                installedPrefs.edit().putString(e.getKey(), installedPackage).apply();
+            }
+        }
+
         for (Map.Entry<String, DownloadState> entry : active.entrySet()) {
             DownloadState state = entry.getValue();
             if (!state.installed && installedPackage.equals(state.packageName)) {
                 state.installed = true;
+                state.status = "installed";
                 final String slug = state.slug;
                 mainHandler.post(() -> {
-                    emit(slug, "installed", 1.0);
+                    emit(slug, "installed", 1.0, null);
+                    // Install finished — tidy up like Google Play: drop the
+                    // tracked state and delete the downloaded APK file.
+                    DownloadState st = active.get(slug);
+                    if (st != null && st.file != null && st.file.exists()) {
+                        st.file.delete();
+                    }
+                    persisted.remove(slug);
+                    savePersistedStates();
                     active.remove(slug);
                 });
                 return;
             }
         }
     }
+
+    /* ------------------------------------------------------------------
+     * State reconciliation & persistence
+     * ------------------------------------------------------------------ */
+
+    /**
+     * Aligns persisted states with the real device:
+     *  - package now installed          -> "installed" (+ registry + cleanup)
+     *  - was "installing", not installed -> "downloaded" (retry available)
+     *  - "downloading" with a complete or partial file -> stays resumable
+     */
+    private void ensureReconciled() {
+        if (!stateLoaded) loadPersistedStates();
+        boolean dirty = false;
+        Iterator<Map.Entry<String, JSONObject>> it = persisted.entrySet().iterator();
+        while (it.hasNext()) {
+            Map.Entry<String, JSONObject> e = it.next();
+            JSONObject p = e.getValue();
+            String status = p.optString("status", "");
+            String pkg = p.optString("package_name", "");
+            String slug = e.getKey();
+            if ("installed".equals(status)) { it.remove(); dirty = true; continue; }
+            if (pkg.isEmpty()) continue;
+            boolean present = !isPackageInstalledInternal(pkg).isEmpty();
+            if (present) {
+                installedPrefs.edit().putString(slug, pkg).apply();
+                it.remove();
+                dirty = true;
+                final String s = slug;
+                mainHandler.post(() -> emit(s, "installed", 1.0, null));
+            } else if ("installing".equals(status)) {
+                try { p.put("status", "downloaded"); } catch (Exception ignore) {}
+                dirty = true;
+                final String s = slug;
+                mainHandler.post(() -> emit(s, "downloaded", 1.0, p.optString("filename", "")));
+            }
+        }
+        if (dirty) savePersistedStates();
+    }
+
+    private void autoResumeInterrupted() {
+        for (Map.Entry<String, JSONObject> e : persisted.entrySet()) {
+            JSONObject p = e.getValue();
+            if (!"downloading".equals(p.optString("status", ""))) continue;
+            final String slug = e.getKey();
+            if (active.containsKey(slug)) continue; // still running
+            final String url = p.optString("url", "");
+            final String filename = p.optString("filename", "");
+            final String pkg = p.optString("package_name", "");
+            if (url.isEmpty() || filename.isEmpty()) continue;
+            executor.execute(() -> {
+                if (active.containsKey(slug)) return;
+                Log.i(TAG, "Auto-resuming interrupted download: " + slug);
+                startDownload(url, filename, slug, pkg, true);
+            });
+        }
+    }
+
+    private void pushAllStates() {
+        if (webView == null) return;
+        ensureReconciled();
+        JSONObject out = new JSONObject();
+        try {
+            for (Map.Entry<String, JSONObject> e : persisted.entrySet()) {
+                out.put(e.getKey(), e.getValue());
+            }
+            for (Map.Entry<String, DownloadState> e : active.entrySet()) {
+                out.put(e.getKey(), stateToJson(e.getValue()));
+            }
+        } catch (Exception ignore) {}
+        String js = "try{if(window.__gsDownloadStatesSnapshot){window.__gsDownloadStatesSnapshot(" + out.toString() + ");}}catch(e){}";
+        webView.evaluateJavascript(js, null);
+    }
+
+    private String isPackageInstalledInternal(String packageName) {
+        try {
+            PackageInfo info = activity.getPackageManager().getPackageInfo(packageName, 0);
+            if (info == null) return "";
+            return info.versionName != null ? info.versionName : "installed";
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    private JSONObject persistedState(String slug) {
+        JSONObject p = persisted.get(slug);
+        if (p == null) { p = new JSONObject(); persisted.put(slug, p); }
+        return p;
+    }
+
+    private void persistState(DownloadState state) {
+        try {
+            JSONObject p = persistedState(state.slug);
+            p.put("slug", state.slug);
+            p.put("package_name", state.packageName == null ? "" : state.packageName);
+            p.put("filename", state.filename == null ? "" : state.filename);
+            p.put("url", state.url == null ? "" : state.url);
+            p.put("status", state.status);
+            p.put("progress", state.totalBytes > 0 ? (double) state.downloadedBytes / state.totalBytes : -1);
+            p.put("downloaded_bytes", state.downloadedBytes);
+            p.put("total_bytes", state.totalBytes);
+            p.put("updated_at", System.currentTimeMillis() / 1000);
+            savePersistedStates();
+        } catch (Exception e) {
+            Log.e(TAG, "persistState failed", e);
+        }
+    }
+
+    private JSONObject stateToJson(DownloadState state) {
+        JSONObject p = new JSONObject();
+        try {
+            p.put("slug", state.slug);
+            p.put("package_name", state.packageName == null ? "" : state.packageName);
+            p.put("filename", state.filename == null ? "" : state.filename);
+            p.put("url", state.url == null ? "" : state.url);
+            p.put("status", state.status);
+            p.put("progress", state.totalBytes > 0 ? (double) state.downloadedBytes / state.totalBytes : -1);
+            p.put("downloaded_bytes", state.downloadedBytes);
+            p.put("total_bytes", state.totalBytes);
+            p.put("updated_at", System.currentTimeMillis() / 1000);
+        } catch (Exception ignore) {}
+        return p;
+    }
+
+    private void loadPersistedStates() {
+        try {
+            if (stateFile.exists()) {
+                byte[] raw = new byte[(int) stateFile.length()];
+                FileInputStream fin = new FileInputStream(stateFile);
+                int read = fin.read(raw);
+                fin.close();
+                if (read > 0) {
+                    JSONObject obj = new JSONObject(new String(raw, StandardCharsets.UTF_8));
+                    persisted.clear();
+                    Iterator<String> keys = obj.keys();
+                    while (keys.hasNext()) {
+                        String k = keys.next();
+                        persisted.put(k, obj.getJSONObject(k));
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "loadPersistedStates failed", e);
+        }
+        stateLoaded = true;
+    }
+
+    private void savePersistedStates() {
+        try {
+            JSONObject obj = new JSONObject();
+            for (Map.Entry<String, JSONObject> e : persisted.entrySet()) {
+                obj.put(e.getKey(), e.getValue());
+            }
+            FileOutputStream fos = new FileOutputStream(stateFile);
+            fos.write(obj.toString().getBytes(StandardCharsets.UTF_8));
+            fos.close();
+        } catch (Exception e) {
+            Log.e(TAG, "savePersistedStates failed", e);
+        }
+    }
+
+    private void removeInstalledRegistryByPackage(String packageName) {
+        try {
+            SharedPreferences.Editor ed = installedPrefs.edit();
+            boolean changed = false;
+            Map<String, ?> all = installedPrefs.getAll();
+            for (Map.Entry<String, ?> e : all.entrySet()) {
+                if (packageName.equals(String.valueOf(e.getValue()))) { ed.remove(e.getKey()); changed = true; }
+            }
+            if (changed) ed.apply();
+        } catch (Exception ignore) {}
+    }
+
+    /* ------------------------------------------------------------------
+     * Web-layer emissions
+     * ------------------------------------------------------------------ */
 
     private void emit(String slug, String status, double progress, String message) {
         if (webView == null) return;
@@ -493,10 +896,6 @@ public class GSAndroid {
         if (webView == null || packageName == null) return;
         String js = "try{if(window.__gsPackageUninstalled){window.__gsPackageUninstalled(" + quote(packageName) + ");}}catch(e){}";
         webView.evaluateJavascript(js, null);
-    }
-
-    private void emit(String slug, String status, double progress) {
-        emit(slug, status, progress, null);
     }
 
     private String quote(String s) {

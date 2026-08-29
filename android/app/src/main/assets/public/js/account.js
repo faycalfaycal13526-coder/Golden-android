@@ -35,6 +35,11 @@
     const body = el('div', { class: 'acct-body' });
     content.append(body);
 
+    // --- Live downloads: in-flight downloads + ready-to-install packages ---
+    // Progress/status update in real time (Google Play style) via the central
+    // state hub; entries survive app restarts through the native bridge.
+    mountLiveDownloads(body);
+
     const history = S.getDownloadHistory();
 
     if (!history.length) {
@@ -66,6 +71,8 @@
 
     const list = el('div', { class: 'lib-list' });
     history.forEach((item) => {
+      // Real device check: mark items actually installed on this device.
+      const deviceVer = S.installedVersionOnDevice(item.package_name || '');
       const row = el('a', { href: `/app?slug=${encodeURIComponent(item.slug)}`, class: 'lib-row' },
         el('div', { class: 'art' },
           item.icon_url
@@ -82,12 +89,140 @@
           ),
         ),
         el('div', { class: 'lib-action' },
-          el('span', { class: 'lib-open-btn' }, ico('chevronStart', 'icon icon-sm')),
+          deviceVer
+            ? el('span', { class: 'lib-installed-badge' }, ico('check', 'icon icon-sm'), t('مثبّت'))
+            : el('span', { class: 'lib-open-btn' }, ico('chevronStart', 'icon icon-sm')),
         ),
       );
       list.append(row);
     });
     body.append(list);
+  }
+
+  // --- Live downloads section (library) ---
+  // Renders downloading / downloaded / installing entries from the central
+  // hub, enriched with names/icons from the download history. Re-renders on
+  // every state event so progress and status stay live on this page.
+  function mountLiveDownloads(body) {
+    const section = el('div', { class: 'live-dls' });
+    let paintQueued = false;
+
+    function paint() {
+      paintQueued = false;
+      const map = S.getApkStateMap ? S.getApkStateMap() : {};
+      const entries = Object.values(map).filter((st) => st && st.slug);
+      section.innerHTML = '';
+      if (!entries.length) return;
+
+      const historyById = {};
+      S.getDownloadHistory().forEach((h) => { historyById[h.slug] = h; });
+
+      section.append(el('div', { class: 'live-dls-title' },
+        ico('download', 'icon'),
+        el('span', null, t('جارٍ التنزيل الآن')),
+        el('span', { class: 'live-count' }, String(entries.length)),
+      ));
+
+      entries
+        .sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0))
+        .forEach((st) => {
+          const info = historyById[st.slug] || {};
+          const name = info.name || st.name || st.slug;
+          const pct = st.status === 'downloading' && typeof st.progress === 'number' && st.progress >= 0
+            ? Math.max(0, Math.min(100, Math.round(st.progress * 100))) : null;
+
+          const statusText = st.status === 'downloading'
+            ? (pct === null ? t('جارٍ التنزيل…') : `${t('جارٍ التنزيل…')} ${pct}%`)
+            : st.status === 'downloaded' ? t('تم التنزيل — جاهز للتثبيت')
+            : st.status === 'installing' ? t('جارٍ التثبيت…')
+            : t('قيد المعالجة…');
+
+          const barFill = el('span');
+          if (st.status === 'downloading') {
+            if (pct !== null) barFill.style.width = pct + '%';
+            else barFill.style.width = '100%';
+          } else if (st.status === 'installing') {
+            barFill.style.width = '100%';
+          } else {
+            barFill.style.width = '100%';
+          }
+          if (st.status !== 'downloading' || pct === null) barFill.classList.add('indeterminate');
+
+          const meta = el('div', { class: 'meta' },
+            el('span', null, statusText),
+            el('span', null, info.size_bytes ? formatBytes(info.size_bytes) : ''),
+          );
+
+          const infoCol = el('div', { class: 'info' },
+            el('div', { class: 'nm' }, name),
+            el('div', { class: 'bar' }, barFill),
+            meta,
+          );
+
+          const row = el('div', { class: `live-dl live-dl-${st.status}` },
+            el('div', { class: 'art' },
+              info.icon_url
+                ? el('img', { src: info.icon_url, alt: '', loading: 'lazy' })
+                : ico('package', 'icon icon-lg'),
+            ),
+            infoCol,
+          );
+
+          if (st.status === 'downloading') {
+            row.append(el('button', {
+              class: 'live-dl-cancel', type: 'button',
+              'aria-label': t('إلغاء'), title: t('إلغاء'),
+              onclick: (e) => {
+                e.preventDefault();
+                S.cancelDownload(st.slug);
+                toast(t('تم إلغاء التنزيل'), 'info');
+                paint();
+              },
+            }, ico('close', 'icon')));
+          } else if (st.status === 'downloaded') {
+            row.append(el('button', {
+              class: 'live-dl-install', type: 'button',
+              onclick: (e) => {
+                e.preventDefault();
+                if (window.GSAndroid && typeof window.GSAndroid.openDownloadedApk === 'function') {
+                  window.GSAndroid.openDownloadedApk(st.filename || '', st.slug, st.package_name || info.package_name || '');
+                  toast(t('جارٍ فتح مثبّت النظام…'), 'info');
+                } else {
+                  location.href = `/app?slug=${encodeURIComponent(st.slug)}`;
+                }
+              },
+            }, ico('download', 'icon'), t('تثبيت')));
+          }
+          section.append(row);
+        });
+    }
+
+    function queuePaint() {
+      if (paintQueued) return;
+      paintQueued = true;
+      requestAnimationFrame(paint);
+    }
+
+    const offState = S.onApkState ? S.onApkState(() => queuePaint()) : null;
+    const offDl = S.onActiveDownloadsChange ? S.onActiveDownloadsChange(() => queuePaint()) : null;
+    // Stop listening when navigating away (page unload clears everything).
+    window.addEventListener('pagehide', () => {
+      if (offState) offState();
+      if (offDl) offDl();
+    }, { once: true });
+
+    paint();
+    // Only mount when there is something live to show (or updates arrive).
+    if (section.childNodes.length) body.append(section);
+    else {
+      const earlyOff = S.onApkState(() => {
+        if (section.childNodes.length) return;
+        if (!Object.keys(S.getApkStateMap ? S.getApkStateMap() : {}).length) return;
+        earlyOff();
+        body.prepend(section);
+        queuePaint();
+      });
+    }
   }
 
   // --- Settings page (profile + settings) ---

@@ -208,17 +208,11 @@
   }
 
   // ----- Install: persist "installed" apps locally so the state survives reloads.
-  const INSTALL_KEY = 'gs_installed';
-  function installedSet() {
-    try { return new Set(JSON.parse(localStorage.getItem(INSTALL_KEY) || '[]')); } catch { return new Set(); }
-  }
-  function isInstalled(slug) { return installedSet().has(slug); }
-  function markInstalledStored(slug) {
-    try { const s = installedSet(); s.add(slug); localStorage.setItem(INSTALL_KEY, JSON.stringify([...s])); } catch {}
-  }
-  function unmarkInstalledStored(slug) {
-    try { const s = installedSet(); s.delete(slug); localStorage.setItem(INSTALL_KEY, JSON.stringify([...s])); } catch {}
-  }
+  // (Registry helpers live in store.js now; the REAL source of truth is the
+  // device PackageManager via S.installedVersionOnDevice.)
+  const isInstalled = (slug) => S.isInstalledStored(slug);
+  const markInstalledStored = (slug) => S.markInstalledStored(slug);
+  const unmarkInstalledStored = (slug) => S.unmarkInstalledStored(slug);
   // Generic centered dialog (used by "request update" and "report").
   function openDialog({ icon, title, fields, submitLabel, onSubmit }) {
     const overlay = el('div', { class: 'dialog-overlay', onclick: (e) => { if (e.target === overlay) close(); } });
@@ -341,12 +335,19 @@
       fill.style.transition = 'none';
       fill.style.width = '0%';
     }
-    function showInstalled() {
+    function showInstalled(mode) {
       resetBar();
-      btn.classList.add('installed');
       btn.disabled = false;
       label.innerHTML = '';
-      label.append(ico('check', 'icon'), document.createTextNode(t('تم التثبيت')));
+      if (mode === 'update') {
+        // A newer store version is available: Google Play style "تحديث" button.
+        btn.classList.remove('installed');
+        btn.classList.add('has-update');
+        label.append(ico('refresh', 'icon'), document.createTextNode(t('تحديث')));
+      } else {
+        btn.classList.add('installed');
+        label.append(ico('check', 'icon'), document.createTextNode(t('تم التثبيت')));
+      }
     }
 
     // ---- Post-install actions: Open + Uninstall (native app only) ----
@@ -456,20 +457,29 @@
         S.addToDownloadHistory(app);
         // Also show the post-download actions bar immediately so the user can
         // retry the install or delete the file if the system installer prompt
-        // was dismissed.
-        showDownloadedActions(app, filename);
+        // was dismissed. The native bridge reports the real filename.
+        showDownloadedActions(app, message || filename);
         return;
       }
       if (status === 'installing') {
         btn.classList.add('installing');
         btn.disabled = true;
+        setProgress(1);
         label.textContent = t('جارٍ التثبيت…');
+        S.setActiveDownload({ slug: app.slug, status: 'installing', progress: 1 });
         return;
       }
       if (status === 'installed') {
         markInstalledStored(app.slug);
         showInstalled();
         showInstalledActions(app);
+        return;
+      }
+      if (status === 'cancelled') {
+        S.removeActiveDownload(app.slug);
+        removeInstalledActions();
+        showIdle();
+        toast(t('تم إلغاء التنزيل'), 'info');
         return;
       }
       if (status === 'uninstalled') {
@@ -636,14 +646,57 @@
 
     btn.addEventListener('click', runInstall);
 
-    // Restore download state on page reload: if this app has an active download,
-    // show the progress bar continuing from where it was and simulate ongoing progress.
-    const activeDls = S.getActiveDownloads();
-    const activeDl = activeDls.find((d) => d.slug === app.slug);
-    if (activeDl && isNativeApp()) {
-      S.removeActiveDownload(app.slug);
+    // ----- Restore the REAL install/download state when the page (re)loads.
+    // Native: the device PackageManager is the source of truth — this is what
+    // makes the page show "فتح / إلغاء التثبيت" instead of "تثبيت" after
+    // returning to the store, and shows live progress for in-flight installs.
+    function resolveInstallState() {
+      const deviceVer = S.installedVersionOnDevice(app.package_name || '');
+      const live = S.getApkState(app.slug);
+      if (deviceVer) {
+        markInstalledStored(app.slug);
+        const hasUpdate = S.versionIsNewer(app.version_name || '', deviceVer);
+        showInstalled(hasUpdate ? 'update' : 'open');
+        showInstalledActions(app);
+        return;
+      }
+      // Not installed on the device — never trust a stale local registry.
+      unmarkInstalledStored(app.slug);
+      removeInstalledActions();
+      if (live && live.status === 'downloading') {
+        btn.classList.add('installing');
+        btn.disabled = true;
+        if (live.progress >= 0) setProgress(live.progress);
+        else setIndeterminate();
+        return;
+      }
+      if (live && live.status === 'installing') {
+        btn.classList.add('installing');
+        btn.disabled = true;
+        setProgress(1);
+        label.textContent = t('جارٍ التثبيت…');
+        return;
+      }
+      if (live && live.status === 'downloaded') {
+        // APK downloaded but not installed yet (e.g. installer dismissed).
+        setProgress(1);
+        btn.classList.remove('installing');
+        btn.disabled = false;
+        label.textContent = t('جاهز للتثبيت');
+        showDownloadedActions(app, live.filename || filename);
+        return;
+      }
+      showIdle();
     }
-    if (activeDl && activeDl.status === 'downloading' && !isNativeApp()) {
+
+    if (isNativeApp()) {
+      resolveInstallState();
+    } else {
+      // Browser fallback: restore download state on page reload by estimating
+      // progress (no native bridge to ask for the truth).
+      const activeDls = S.getActiveDownloads();
+      const activeDl = activeDls.find((d) => d.slug === app.slug);
+      if (activeDl && activeDl.status === 'downloading') {
       btn.classList.add('installing');
       btn.disabled = true;
 
@@ -691,9 +744,9 @@
           }
         }, stepInterval);
       }
-    } else if (isInstalled(app.slug)) {
-      showInstalled();
-      if (isNativeApp()) showInstalledActions(app);
+      } else if (isInstalled(app.slug)) {
+        showInstalled();
+      }
     }
 
     // Split dropdown attached to the install button: request-update / report.

@@ -110,6 +110,18 @@ public class MainActivity extends BridgeActivity {
         requestNotificationPermission();
     }
 
+    @Override
+    public void onResume() {
+        super.onResume();
+        // Coming back from the system installer (or from another app):
+        // reconcile every tracked download/install state against the real
+        // device and push a fresh snapshot to the web layer, so progress and
+        // status stay live across exits and installer round trips.
+        if (gsAndroid != null) {
+            gsAndroid.onAppResumed();
+        }
+    }
+
     private void setupGoogleSignIn() {
         try {
             String serverClientId = getString(R.string.default_web_client_id);

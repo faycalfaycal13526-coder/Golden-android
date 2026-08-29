@@ -285,13 +285,20 @@ input, select { font-family: inherit; }
 /* horizontal poster row */
 .hrow {
   display: flex; gap: 14px; overflow-x: auto; scrollbar-width: none;
-  padding: 0 16px 4px; scroll-snap-type: x proximity;
+  padding: 0 16px 4px;
+  /* Smooth, conflict-free touch scrolling (Google Play style): free momentum
+     scroll without per-card snap fighting the finger, contained so horizontal
+     swipes never bounce the page vertically. */
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+  touch-action: pan-x pan-y;
 }
 .hrow::-webkit-scrollbar { display: none; }
 
 /* poster card (square icon + name) */
 .poster {
-  flex: 0 0 auto; width: 96px; scroll-snap-align: start;
+  flex: 0 0 auto; width: 96px;
+  -webkit-user-drag: none; user-select: none;
 }
 .poster .art {
   width: 96px; height: 96px; border-radius: 20px; overflow: hidden;
@@ -1387,6 +1394,76 @@ input, select { font-family: inherit; }
 .hidden { display: none !important; }
 
 /* ---------- Editors' choice carousel (Google Play style) ---------- */
+
+/* ---------- Live downloads (library, Google Play style) ---------- */
+.live-dls { padding: 0 16px; margin-bottom: 18px; }
+.live-dls-title {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 16px; font-weight: 700; margin: 4px 0 12px;
+}
+.live-dls-title .icon { color: var(--nav); }
+.live-dls-title .live-count {
+  background: var(--nav); color: #fff; font-size: 11px; font-weight: 700;
+  min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.live-dl {
+  display: flex; align-items: center; gap: 12px;
+  background: var(--surface-2); border: 1px solid var(--line);
+  border-radius: 16px; padding: 12px; margin-bottom: 10px;
+}
+.live-dl .art {
+  width: 44px; height: 44px; border-radius: 12px; overflow: hidden; flex: 0 0 auto;
+  background: var(--surface); display: flex; align-items: center; justify-content: center;
+  color: var(--text-3);
+}
+.live-dl .art img { width: 100%; height: 100%; object-fit: cover; }
+.live-dl .info { flex: 1; min-width: 0; }
+.live-dl .nm { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.live-dl .bar {
+  height: 4px; border-radius: 4px; overflow: hidden;
+  background: rgba(128,128,128,.25); margin-top: 8px;
+}
+.live-dl .bar > span {
+  display: block; height: 100%; width: 0%; border-radius: 4px;
+  background: var(--nav); transition: width .25s ease;
+}
+.live-dl .bar > span.indeterminate {
+  width: 100% !important;
+  background: linear-gradient(90deg, transparent 0%, var(--nav) 45%, var(--nav) 55%, transparent 100%);
+  background-size: 40% 100%; background-repeat: no-repeat;
+  animation: gsIndet 1.2s ease-in-out infinite;
+}
+@keyframes gsIndet {
+  0% { background-position: -40% 0; }
+  100% { background-position: 140% 0; }
+}
+.live-dl .meta {
+  display: flex; justify-content: space-between; gap: 8px;
+  font-size: 11px; color: var(--text-2); margin-top: 6px;
+}
+.live-dl-cancel, .live-dl-install {
+  flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid var(--line); background: var(--surface); color: var(--text);
+  border-radius: 12px; padding: 8px 12px; font-size: 13px; font-weight: 600;
+  cursor: pointer;
+}
+.live-dl-install { background: var(--nav); color: #fff; border-color: transparent; }
+.live-dl-cancel .icon { width: 16px; height: 16px; }
+.lib-installed-badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 11px; font-weight: 700; color: #2fbf71;
+  background: rgba(47,191,113,.12); border: 1px solid rgba(47,191,113,.35);
+  border-radius: 999px; padding: 5px 10px; white-space: nowrap;
+}
+
+/* Update-available variant of the install button (Google Play style) */
+.install-btn.has-update {
+  background: rgba(47,123,255,.12); color: #4f93ff;
+  border: 1px solid rgba(79,147,255,.5);
+  box-shadow: 0 2px 8px rgba(47,123,255,.15);
+}
+
 .feature-carousel {
   margin: 6px 16px 4px; position: relative;
   border-radius: 16px; overflow: hidden;
@@ -1399,6 +1476,12 @@ input, select { font-family: inherit; }
   scrollbar-width: none; -ms-overflow-style: none;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior-x: contain;
+  touch-action: pan-x pan-y;
+}
+/* Images inside scrollers must never start a native drag (conflicts with swipe). */
+.hrow img, .fc-track img, .shots img, .grid-card img, .lib-list img {
+  -webkit-user-drag: none;
+  user-drag: none;
 }
 .fc-track::-webkit-scrollbar { display: none; }
 .fc-slide {
@@ -1406,6 +1489,7 @@ input, select { font-family: inherit; }
   scroll-snap-align: start;
   display: flex; flex-direction: column;
   color: var(--text); overflow: visible; background: transparent;
+  -webkit-user-drag: none; user-select: none;
 }
 /* Rounded cover image only (Google Play style): the app info bar below stays square (no container) */
 .fc-slide .fc-media {
