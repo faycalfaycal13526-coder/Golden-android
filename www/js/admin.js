@@ -70,16 +70,29 @@
       return await r2MultipartUpload(file, kind, slugHint, contentType, onProgress);
     }
 
-    // Small file: single presigned PUT (with retry)
-    const { url, key } = await api('/api/admin/upload-url', {
-      method: 'POST',
-      body: {
-        kind,
-        filename: file.name,
-        content_type: contentType,
-        slug_hint: slugHint || file.name,
-      },
-    });
+    // Small file: single presigned PUT (with retry). The presign request
+    // itself is retried too — transient 4xx/5xx/timeouts here used to abort
+    // the whole upload.
+    let presign = null;
+    for (let attempt = 0; attempt <= 2; attempt++) {
+      try {
+        presign = await api('/api/admin/upload-url', {
+          method: 'POST',
+          timeoutMs: 30000,
+          body: {
+            kind,
+            filename: file.name,
+            content_type: contentType,
+            slug_hint: slugHint || file.name,
+          },
+        });
+        break;
+      } catch (err) {
+        if (attempt === 2) throw err;
+        await new Promise((r) => setTimeout(r, 1000 * Math.pow(2, attempt)));
+      }
+    }
+    const { url, key } = presign;
 
     await retryXhrPut(url, file, contentType, (loaded, total) => {
       if (onProgress) onProgress(loaded / total);
@@ -128,12 +141,22 @@
         completedParts.push({ PartNumber: partNum, ETag: etag });
       }
 
-      // 3. Complete multipart upload
-      await api('/api/admin/multipart/complete', {
-        method: 'POST',
-        timeoutMs: 30000,
-        body: { key, uploadId, parts: completedParts },
-      });
+      // 3. Complete multipart upload (with retry — transient failures here
+      // used to leave fully-uploaded files dangling as aborted uploads).
+      let completed = false;
+      for (let attempt = 0; attempt <= 2 && !completed; attempt++) {
+        try {
+          await api('/api/admin/multipart/complete', {
+            method: 'POST',
+            timeoutMs: 30000,
+            body: { key, uploadId, parts: completedParts },
+          });
+          completed = true;
+        } catch (err) {
+          if (attempt === 2) throw err;
+          await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+        }
+      }
 
       return key;
     } catch (err) {

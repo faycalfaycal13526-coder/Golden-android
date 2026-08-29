@@ -28,7 +28,7 @@
   --radius: 18px;
   --radius-sm: 12px;
   --maxw: 720px;
-  --nav-h: 64px;
+  --nav-h: 72px;
   --bar-h: 60px;
   --font: 'Tajawal', 'Roboto', system-ui, -apple-system, 'Segoe UI', sans-serif;
 }
@@ -108,8 +108,8 @@ input, select { font-family: inherit; }
 .topbar { padding: 10px 16px 8px; }
 .topbar-home { display: flex; align-items: center; gap: 6px; height: 48px; width: 100%; max-width: var(--maxw); margin: 0 auto; }
 .topbar-home .tb-spacer { flex: 1; }
-.brand { flex-shrink: 0; height: 40px; display: flex; align-items: center; }
-.brand img { height: 40px; width: auto; object-fit: contain; }
+.brand { flex-shrink: 0; height: 48px; display: flex; align-items: center; }
+.brand img { height: 48px; width: auto; object-fit: contain; }
 .topbar-home .icon-btn {
   width: 40px; height: 40px; flex-shrink: 0;
   background: var(--surface-2); border: 1px solid var(--border);
@@ -318,9 +318,9 @@ input, select { font-family: inherit; }
 /* Square grid cards (home-page grid view) */
 .grid-list {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-  padding: 0 8px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  padding: 0 12px;
 }
 .grid-card {
   display: flex;
@@ -331,7 +331,7 @@ input, select { font-family: inherit; }
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 20px;
-  padding: 12px;
+  padding: 10px 6px 12px;
   text-align: center;
   overflow: hidden;
   transition: background .12s, transform .06s;
@@ -722,7 +722,7 @@ input, select { font-family: inherit; }
 @media (min-width: 600px) {
   .content { max-width: 720px; margin: 0 auto; }
   .poster-grid { grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); }
-  .grid-list { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .grid-list { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .applist.two-col { grid-template-columns: repeat(2, 1fr); gap: 4px 16px; }
   .applist.two-col .approw .art { width: 52px; height: 52px; }
 }
@@ -1213,7 +1213,7 @@ input, select { font-family: inherit; }
     grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
     gap: 24px 18px;
   }
-  .grid-list { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+  .grid-list { grid-template-columns: repeat(6, minmax(0, 1fr)); }
   .applist.two-col {
     grid-template-columns: repeat(4, 1fr);
   }
@@ -1247,7 +1247,7 @@ input, select { font-family: inherit; }
   .content {
     max-width: 1600px;
   }
-  .grid-list { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+  .grid-list { grid-template-columns: repeat(6, minmax(0, 1fr)); }
   .applist.two-col {
     grid-template-columns: repeat(5, 1fr);
   }
@@ -1339,19 +1339,29 @@ input, select { font-family: inherit; }
 .feature-carousel {
   margin: 6px 16px 4px; position: relative;
   border-radius: 16px; overflow: hidden;
-  background: var(--surface);
-  box-shadow: 0 2px 12px rgba(0,0,0,.18);
+  background: transparent;
+  box-shadow: none;
 }
 .fc-track {
   display: flex; direction: ltr;
-  transition: transform .7s cubic-bezier(.6,.05,.25,1);
-  will-change: transform;
+  overflow-x: auto; scroll-snap-type: x mandatory;
+  scrollbar-width: none; -ms-overflow-style: none;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
 }
+.fc-track::-webkit-scrollbar { display: none; }
 .fc-slide {
   position: relative; flex: 0 0 100%; min-width: 100%;
+  scroll-snap-align: start;
   display: flex; flex-direction: column;
   color: var(--text); overflow: hidden; background: var(--surface);
 }
+/* Rounded cover image only (Google Play style): the app info bar below stays square */
+.fc-slide .fc-media {
+  border-radius: 16px;
+  overflow: hidden;
+}
+.fc-slide .fc-media-fallback { border-radius: 16px; }
 /* Image area with gradient overlay for description */
 .fc-media {
   position: relative; width: 100%; aspect-ratio: 16/9;
@@ -1423,6 +1433,8 @@ input, select { font-family: inherit; }
 .fc-dot.on { width: 20px; background: var(--primary); }
 
 /* ---------- Install button + real download progress ---------- */
+.installed-actions { display: flex; gap: 10px; margin-top: 10px; }
+.installed-actions .btn { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
 .install-btn { position: relative; overflow: hidden; isolation: isolate; transition: box-shadow .3s ease, background .2s ease; }
 .install-btn .install-label { position: relative; z-index: 2; display: inline-flex; align-items: center; gap: 8px; font-variant-numeric: tabular-nums; }
 .install-fill {

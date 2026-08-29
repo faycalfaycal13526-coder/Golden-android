@@ -1,5 +1,6 @@
 package com.goldenstore.app;
 
+import android.content.ActivityNotFoundException;
 import android.content.Intent;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
@@ -356,6 +357,66 @@ public class GSAndroid {
         }
     }
 
+    /**
+     * Opens an installed app by its package name (launches the launcher's main
+     * activity). Reports 'open_failed' back to the web layer when the app is
+     * not present on the device.
+     */
+    @JavascriptInterface
+    public void openInstalledApp(final String packageName, final String slug) {
+        if (packageName == null || packageName.isEmpty()) {
+            emit(slug == null ? "" : slug, "open_failed", -1);
+            return;
+        }
+        activity.runOnUiThread(() -> {
+            try {
+                Intent intent = activity.getPackageManager().getLaunchIntentForPackage(packageName);
+                if (intent == null) {
+                    emit(slug == null ? "" : slug, "open_failed", -1);
+                    return;
+                }
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                activity.startActivity(intent);
+            } catch (ActivityNotFoundException e) {
+                emit(slug == null ? "" : slug, "open_failed", -1);
+            } catch (Exception e) {
+                Log.e(TAG, "openInstalledApp failed for " + packageName, e);
+                emit(slug == null ? "" : slug, "open_failed", -1);
+            }
+        });
+    }
+
+    /**
+     * Opens the system uninstall dialog for the given package. When the user
+     * confirms, the package receiver also fires 'uninstalled' (see below);
+     * this immediate 'uninstalled' event keeps the UI in sync right away.
+     */
+    @JavascriptInterface
+    public void uninstallApp(final String packageName) {
+        if (packageName == null || packageName.isEmpty()) return;
+        activity.runOnUiThread(() -> {
+            try {
+                Intent intent = new Intent(Intent.ACTION_DELETE);
+                intent.setData(Uri.parse("package:" + packageName));
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                activity.startActivity(intent);
+                if (packageName.equals(activity.getPackageName())) return; // never mark our own app removed preemptively
+                emitPackageEvent(packageName);
+            } catch (Exception e) {
+                Log.e(TAG, "uninstallApp failed for " + packageName, e);
+            }
+        });
+    }
+
+    /**
+     * Called by PackageChangeReceiver when a package is fully removed.
+     * Notifies the web layer so the detail page can return to the install state.
+     */
+    public void onPackageUninstalled(String uninstalledPackage) {
+        if (uninstalledPackage == null || uninstalledPackage.isEmpty()) return;
+        mainHandler.post(() -> emitPackageEvent(uninstalledPackage));
+    }
+
     public void onPackageInstalled(String installedPackage) {
         if (installedPackage == null || installedPackage.isEmpty()) return;
         for (Map.Entry<String, DownloadState> entry : active.entrySet()) {
@@ -376,6 +437,16 @@ public class GSAndroid {
         if (webView == null) return;
         String progressStr = progress < 0 ? "-1" : String.format(Locale.US, "%.4f", progress);
         String js = "if(window.__gsApkDownloadUpdate){window.__gsApkDownloadUpdate(" + quote(slug) + "," + quote(status) + "," + progressStr + "," + quote(message) + ");}";
+        webView.evaluateJavascript(js, null);
+    }
+
+    /**
+     * Emits a package-level uninstall event to the web layer (no slug
+     * context): the message payload carries the removed package name.
+     */
+    private void emitPackageEvent(String packageName) {
+        if (webView == null || packageName == null) return;
+        String js = "try{if(window.__gsPackageUninstalled){window.__gsPackageUninstalled(" + quote(packageName) + ");}}catch(e){}";
         webView.evaluateJavascript(js, null);
     }
 

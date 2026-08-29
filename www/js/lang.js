@@ -63,6 +63,11 @@
     // actions (machine translation gets these wrong, e.g. تثبيت -> "stabilisation")
     'تثبيت': { en: 'Install', fr: 'Installer', es: 'Instalar' },
     'تم التثبيت': { en: 'Installed', fr: 'Installé', es: 'Instalado' },
+    'إلغاء التثبيت': { en: 'Uninstall', fr: 'Désinstaller', es: 'Desinstalar' },
+    'تم إلغاء تثبيت التطبيق': { en: 'App uninstalled', fr: 'Application désinstallée', es: 'Aplicación desinstalada' },
+    'التطبيق غير مثبت على هذا الجهاز': { en: 'App is not installed on this device', fr: 'L’application n’est pas installée sur cet appareil', es: 'La aplicación no está instalada en este dispositivo' },
+    'تعذّر فتح التطبيق': { en: 'Couldn’t open the app', fr: 'Impossible d’ouvrir l’application', es: 'No se pudo abrir la aplicación' },
+    'غير متاح في هذا المتصفح': { en: 'Not available in this browser', fr: 'Non disponible dans ce navigateur', es: 'No disponible en este navegador' },
     'مثبت': { en: 'Installed', fr: 'Installé', es: 'Instalado' },
     'مثبّت': { en: 'Installed', fr: 'Installé', es: 'Instalado' },
     'فتح': { en: 'Open', fr: 'Ouvrir', es: 'Abrir' },

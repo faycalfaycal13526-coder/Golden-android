@@ -42,7 +42,7 @@ function isNativeApp() {
 function apiBaseUrl() {
   if (!isNativeApp()) return '';
   const cfg = window.Capacitor.getConfig && window.Capacitor.getConfig();
-  return (cfg && cfg.apiBase) || 'https://goldenstore-new.vercel.app';
+  return (cfg && cfg.apiBase) || 'https://goldenstore.vercel.app';
 }
 
 function fullApiUrl(path) {
@@ -191,6 +191,21 @@ function ratingOf(app) {
 
 function getQuery(name) { return new URLSearchParams(location.search).get(name) || ''; }
 
+// Public origin of the store website for share links. Inside the native
+// WebView the document origin is a local scheme (capacitor://localhost), so
+// shared links must point at the real site instead.
+function publicOrigin() {
+  try {
+    if (isNativeApp()) {
+      const cfg = window.Capacitor && window.Capacitor.getConfig && window.Capacitor.getConfig();
+      const base = (cfg && (cfg.apiBase || cfg.server && cfg.server.url)) || '';
+      if (base) return base.replace(/\/+$/, '');
+      return 'https://goldenstore-new.vercel.app';
+    }
+  } catch (e) {}
+  return location.origin;
+}
+
 
 function toast(msg, type = 'info', ms = 3000) {
   let stack = document.querySelector('.toast-stack');
@@ -284,7 +299,7 @@ function featureSlide(a) {
           rt ? el('span', { class: 'fc-bar-rate' }, rt, ico('star', 'icon fill')) : null,
         ),
       ),
-      el('span', { class: 'fc-bar-btn' }, t('عرض')),
+      el('span', { class: 'fc-bar-btn' }, t('تثبيت')),
     ),
   );
   return slide;
@@ -307,15 +322,47 @@ function featureCarousel(apps, opts = {}) {
 
   let idx = 0;
   let timer = null;
-  function paint() {
-    track.style.transform = `translateX(${-idx * 100}%)`;
-    Array.from(dots.children).forEach((d, i) => d.classList.toggle('on', i === idx));
+
+  // --- Touch-scroll carousel ---
+  // The track is a native horizontal scroller: momentum, edge resistance and
+  // swipe direction all follow the finger exactly (like Google Play). The
+  // active index is derived from the scroll position; dots stay in sync.
+  function slideWidth() {
+    return track.clientWidth || wrap.clientWidth || 1;
   }
-  function go(i, manual) { idx = (i + list.length) % list.length; paint(); if (manual) restart(); }
+  function maxIndex() { return Math.max(0, list.length - 1); }
+  function setIdx(i) {
+    const clamped = Math.max(0, Math.min(maxIndex(), i));
+    if (clamped === idx) return;
+    idx = clamped;
+    Array.from(dots.children).forEach((d, k) => d.classList.toggle('on', k === idx));
+  }
+  function goTo(i, smooth) {
+    const clamped = Math.max(0, Math.min(maxIndex(), i));
+    try { track.scrollTo({ left: clamped * slideWidth(), behavior: smooth ? 'smooth' : 'auto' }); }
+    catch (e) { track.scrollLeft = clamped * slideWidth(); }
+    setIdx(clamped);
+  }
+  function go(i, manual) { goTo(i, true); if (manual) restart(); }
   function restart() {
     if (timer) clearInterval(timer);
-    if (list.length > 1) timer = setInterval(() => go(idx + 1), opts.interval || 4500);
+    if (list.length > 1) timer = setInterval(() => go(idx >= maxIndex() ? 0 : idx + 1), opts.interval || 4500);
   }
+  function paint() { goTo(idx, false); }
+
+  let rafPending = false;
+  track.addEventListener('scroll', () => {
+    if (rafPending) return;
+    rafPending = true;
+    requestAnimationFrame(() => {
+      rafPending = false;
+      const w = slideWidth();
+      if (w > 0) setIdx(Math.round(track.scrollLeft / w));
+    });
+  }, { passive: true });
+
+  // Pause auto-advance while the user is touching the carousel.
+  track.addEventListener('touchstart', () => { if (timer) clearInterval(timer); }, { passive: true });
   wrap.addEventListener('mouseenter', () => { if (timer) clearInterval(timer); });
   wrap.addEventListener('mouseleave', restart);
   paint();
@@ -885,6 +932,16 @@ window.__gsApkDownloadUpdate = function (slug, status, progress, message) {
   }
 };
 
+// Native bridge notifies the web layer when any package is uninstalled.
+// Pages that care (app detail) listen for 'gs-package-uninstalled' and can
+// match the removed package name against the app they display.
+window.__gsPackageUninstalled = function (packageName) {
+  try {
+    if (!packageName) return;
+    window.dispatchEvent(new CustomEvent('gs-package-uninstalled', { detail: { packageName: packageName } }));
+  } catch (e) {}
+};
+
 async function checkAppUpdate() {
   if (!isNativeApp()) return;
   try {
@@ -1084,6 +1141,7 @@ function onActiveDownloadsChange(fn) {
 window.Store = {
   STORE, api, el, ico, t,
   formatBytes, formatCount, formatNum, formatDate, ratingOf, ratingValue, ratingCountOf, getQuery, toast,
+  publicOrigin,
   posterCard, listRow, gridCard, featureCarousel, categoryName,
   spinner, skeletonHome, skeletonDetail, skeletonList, emptyState, errorState,
   topbarSearch, topbarNav, bottomNav, avatarEl, themeToggleBtn, langSwitcherEl, toggleTheme, currentTheme,
