@@ -40,6 +40,7 @@ public class MainActivity extends BridgeActivity {
     private PackageChangeReceiver packageReceiver;
     private WebViewListener pageListener;
     private volatile boolean pageLoaded;
+    private long lastBackPressAt = 0L;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -180,11 +181,24 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     public void onBackPressed() {
-        WebView webView = getBridge().getWebView();
+        WebView webView = getBridge() != null ? getBridge().getWebView() : null;
         if (webView != null && webView.canGoBack()) {
+            // In-app back: walk the WebView history (app page → home → …).
             webView.goBack();
-        } else {
+            return;
+        }
+        // At the entry page: require a double tap to exit (Google Play style),
+        // so an accidental back press doesn't kill the store.
+        long now = System.currentTimeMillis();
+        if (now - lastBackPressAt < 2000L) {
             super.onBackPressed();
+        } else {
+            lastBackPressAt = now;
+            try {
+                android.widget.Toast.makeText(this,
+                        "اضغط مرة أخرى للخروج",
+                        android.widget.Toast.LENGTH_SHORT).show();
+            } catch (Exception ignore) {}
         }
     }
 

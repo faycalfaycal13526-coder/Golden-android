@@ -1,12 +1,20 @@
 package com.goldenstore.app;
 
 import android.app.Activity;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
 import android.content.ActivityNotFoundException;
+import android.content.BroadcastReceiver;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.Signature;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
@@ -14,6 +22,7 @@ import android.os.Looper;
 import android.util.Log;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebView;
+import androidx.core.app.NotificationCompat;
 import androidx.core.content.FileProvider;
 import com.google.android.gms.auth.api.signin.GoogleSignIn;
 import com.google.android.gms.auth.api.signin.GoogleSignInAccount;
@@ -61,22 +70,36 @@ public class GSAndroid {
     private static final String STATE_FILE = "gs_download_states.json";
     private static final String INSTALLED_PREFS = "gs_installed_apps";
 
+    // --- Progress notifications (Google Play style status bar) ---
+    private static final String CH_DOWNLOADS = "gs_downloads";
+    private static final String ACTION_CANCEL_DOWNLOAD = "com.goldenstore.app.CANCEL_DOWNLOAD";
+    private static final String EXTRA_SLUG = "slug";
+    private static final int NOTIF_BASE_ID = 20000;
+
     private final MainActivity activity;
     private final WebView webView;
     private final Handler mainHandler;
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
+    // Dedicated thread for notification work (icon fetching must never block
+    // the download executor nor the UI thread).
+    private final ExecutorService notifExecutor = Executors.newSingleThreadExecutor();
     private final Map<String, DownloadState> active = new ConcurrentHashMap<>();
     private final Map<String, JSONObject> persisted = new ConcurrentHashMap<>();
+    private final Map<String, Bitmap> iconCache = new ConcurrentHashMap<>();
     private SharedPreferences installedPrefs;
     private File stateFile;
     private boolean stateLoaded = false;
     private GoogleSignInClient googleSignInClient;
+    private BroadcastReceiver cancelReceiver;
+    private boolean cancelReceiverRegistered = false;
 
     private static class DownloadState {
         String slug;
         String packageName;
         String filename;
         String url;
+        String appName;
+        String iconUrl;
         File file;
         long downloadedBytes = 0;
         long totalBytes = 0;
@@ -95,6 +118,7 @@ public class GSAndroid {
         this.installedPrefs = activity.getSharedPreferences(INSTALLED_PREFS, Activity.MODE_PRIVATE);
         this.stateFile = new File(activity.getFilesDir(), STATE_FILE);
         loadPersistedStates();
+        registerCancelReceiver();
     }
 
     public void setGoogleSignInClient(GoogleSignInClient client) {
@@ -267,23 +291,35 @@ public class GSAndroid {
      * Download pipeline
      * ------------------------------------------------------------------ */
 
+    /**
+     * Starts (or resumes) an APK download. `appName` and `iconUrl` are used
+     * for the status-bar progress notification (both optional for backward
+     * compatibility with older web callers).
+     */
     @JavascriptInterface
-    public void downloadApk(final String url, final String filename, final String slug, final String packageName) {
+    public void downloadApk(final String url, final String filename, final String slug, final String packageName,
+                            final String appName, final String iconUrl) {
         if (url == null || url.isEmpty() || slug == null || slug.isEmpty()) {
             emit(slug, "failed", -1, null);
             return;
         }
         // Never start the same download twice (prevents gesture/duplicate conflicts).
         if (active.containsKey(slug)) return;
-        executor.execute(() -> startDownload(url, filename, slug, packageName, true));
+        final String name = (appName == null || appName.isEmpty())
+                ? ("app-update".equals(slug) ? "Golden Store" : slug) : appName;
+        final String icon = iconUrl == null ? "" : iconUrl;
+        executor.execute(() -> startDownload(url, filename, slug, packageName, name, icon, true));
     }
 
-    private void startDownload(String url, String filename, String slug, String packageName, boolean allowResume) {
+    private void startDownload(String url, String filename, String slug, String packageName,
+                               String appName, String iconUrl, boolean allowResume) {
         DownloadState state = new DownloadState();
         state.slug = slug;
         state.packageName = packageName;
         state.filename = filename;
         state.url = url;
+        state.appName = appName;
+        state.iconUrl = iconUrl;
         state.status = "downloading";
         active.put(slug, state);
 
@@ -753,11 +789,13 @@ public class GSAndroid {
             final String url = p.optString("url", "");
             final String filename = p.optString("filename", "");
             final String pkg = p.optString("package_name", "");
+            final String name = p.optString("app_name", "");
+            final String icon = p.optString("icon_url", "");
             if (url.isEmpty() || filename.isEmpty()) continue;
             executor.execute(() -> {
                 if (active.containsKey(slug)) return;
                 Log.i(TAG, "Auto-resuming interrupted download: " + slug);
-                startDownload(url, filename, slug, pkg, true);
+                startDownload(url, filename, slug, pkg, name, icon, true);
             });
         }
     }
@@ -801,6 +839,8 @@ public class GSAndroid {
             p.put("package_name", state.packageName == null ? "" : state.packageName);
             p.put("filename", state.filename == null ? "" : state.filename);
             p.put("url", state.url == null ? "" : state.url);
+            p.put("app_name", state.appName == null ? "" : state.appName);
+            p.put("icon_url", state.iconUrl == null ? "" : state.iconUrl);
             p.put("status", state.status);
             p.put("progress", state.totalBytes > 0 ? (double) state.downloadedBytes / state.totalBytes : -1);
             p.put("downloaded_bytes", state.downloadedBytes);
@@ -882,6 +922,12 @@ public class GSAndroid {
      * ------------------------------------------------------------------ */
 
     private void emit(String slug, String status, double progress, String message) {
+        // Status-bar progress notification mirrors every state change so the
+        // user sees live download/install progress outside the app (and an
+        // "installed / open" notification at the end) — Google Play style.
+        if (slug != null && !slug.isEmpty()) {
+            updateNotificationAsync(slug, status, progress);
+        }
         if (webView == null) return;
         String progressStr = progress < 0 ? "-1" : String.format(Locale.US, "%.4f", progress);
         String js = "if(window.__gsApkDownloadUpdate){window.__gsApkDownloadUpdate(" + quote(slug) + "," + quote(status) + "," + progressStr + "," + quote(message) + ");}";
@@ -900,5 +946,205 @@ public class GSAndroid {
 
     private String quote(String s) {
         return JSONObject.quote(s != null ? s : "");
+    }
+
+    /* ------------------------------------------------------------------
+     * Status-bar notifications (Google Play style)
+     * downloading → progress bar + cancel · installing → indeterminate
+     * installed → "open" action · cancelled/failed → removed
+     * ------------------------------------------------------------------ */
+
+    private void registerCancelReceiver() {
+        if (cancelReceiverRegistered) return;
+        cancelReceiverRegistered = true;
+        cancelReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                String slug = intent == null ? null : intent.getStringExtra(EXTRA_SLUG);
+                if (slug != null && !slug.isEmpty()) cancelDownload(slug);
+            }
+        };
+        IntentFilter f = new IntentFilter(ACTION_CANCEL_DOWNLOAD);
+        try {
+            if (Build.VERSION.SDK_INT >= 33) {
+                activity.registerReceiver(cancelReceiver, f, Context.RECEIVER_NOT_EXPORTED);
+            } else {
+                activity.registerReceiver(cancelReceiver, f);
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "registerCancelReceiver failed", e);
+        }
+    }
+
+    private void ensureChannels() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
+        try {
+            NotificationManager nm = (NotificationManager) activity.getSystemService(Context.NOTIFICATION_SERVICE);
+            if (nm == null) return;
+            NotificationChannel ch = new NotificationChannel(CH_DOWNLOADS, "تنزيلات التطبيقات", NotificationManager.IMPORTANCE_LOW);
+            ch.setDescription("تقدم تنزيل وتثبيت التطبيقات من Golden Store");
+            ch.setShowBadge(false);
+            ch.setSound(null, null);
+            nm.createNotificationChannel(ch);
+        } catch (Exception e) {
+            Log.e(TAG, "ensureChannels failed", e);
+        }
+    }
+
+    private int notifId(String slug) {
+        return NOTIF_BASE_ID + (Math.abs(slug.hashCode()) % 100000);
+    }
+
+    private boolean canPostNotifications() {
+        if (Build.VERSION.SDK_INT >= 33) {
+            return activity.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+                    == PackageManager.PERMISSION_GRANTED;
+        }
+        return true;
+    }
+
+    private void updateNotificationAsync(final String slug, final String status, final double progress) {
+        notifExecutor.execute(() -> updateNotification(slug, status, progress));
+    }
+
+    private String metaOf(String slug, String key) {
+        DownloadState st = active.get(slug);
+        if (st != null) {
+            if ("app_name".equals(key)) return st.appName == null ? "" : st.appName;
+            if ("icon_url".equals(key)) return st.iconUrl == null ? "" : st.iconUrl;
+            if ("package_name".equals(key)) return st.packageName == null ? "" : st.packageName;
+        }
+        JSONObject p = persisted.get(slug);
+        return p == null ? "" : p.optString(key, "");
+    }
+
+    /** App icon bitmap for the notification (cached in memory + on disk). */
+    private Bitmap loadIconBitmap(String slug, String iconUrl) {
+        if (iconUrl == null || iconUrl.isEmpty()) return null;
+        Bitmap cached = iconCache.get(slug);
+        if (cached != null) return cached;
+        try {
+            File dir = new File(activity.getFilesDir(), "icons");
+            if (!dir.exists()) dir.mkdirs();
+            File f = new File(dir, Integer.toHexString(slug.hashCode()) + ".png");
+            Bitmap bmp = f.exists() ? BitmapFactory.decodeFile(f.getAbsolutePath()) : null;
+            if (bmp == null) {
+                HttpURLConnection c = (HttpURLConnection) new URL(iconUrl).openConnection();
+                c.setConnectTimeout(8000);
+                c.setReadTimeout(8000);
+                c.setRequestProperty("User-Agent", "GoldenStoreApp Android");
+                int code = c.getResponseCode();
+                if (code >= 200 && code < 400) {
+                    InputStream in = c.getInputStream();
+                    bmp = BitmapFactory.decodeStream(in);
+                    try { in.close(); } catch (Exception ignore) {}
+                    if (bmp != null) {
+                        try {
+                            FileOutputStream fo = new FileOutputStream(f);
+                            bmp.compress(Bitmap.CompressFormat.PNG, 90, fo);
+                            fo.close();
+                        } catch (Exception ignore) {}
+                    }
+                }
+                c.disconnect();
+            }
+            if (bmp != null) iconCache.put(slug, bmp);
+            return bmp;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    private void updateNotification(String slug, String status, double progress) {
+        try {
+            NotificationManager nm = (NotificationManager) activity.getSystemService(Context.NOTIFICATION_SERVICE);
+            if (nm == null) return;
+            ensureChannels();
+
+            if ("cancelled".equals(status) || "failed".equals(status)) {
+                nm.cancel(notifId(slug));
+                return;
+            }
+            if (!canPostNotifications()) return;
+
+            String name = metaOf(slug, "app_name");
+            if (name == null || name.isEmpty()) name = "app-update".equals(slug) ? "Golden Store" : slug;
+            Bitmap large = loadIconBitmap(slug, metaOf(slug, "icon_url"));
+            int id = notifId(slug);
+
+            NotificationCompat.Builder b;
+            if ("installed".equals(status)) {
+                // Finished: "تم تثبيت التطبيق" with an Open action, auto-dismiss on tap.
+                b = new NotificationCompat.Builder(activity, CH_DOWNLOADS)
+                        .setSmallIcon(getApplicationIconRes())
+                        .setOnlyAlertOnce(true)
+                        .setAutoCancel(true)
+                        .setOngoing(false)
+                        .setContentTitle("تم التثبيت")
+                        .setContentText("تم تثبيت " + name + " بنجاح — يمكنك فتحه الآن")
+                        .setProgress(0, 0, false);
+                if (large != null) b.setLargeIcon(large);
+                String pkg = metaOf(slug, "package_name");
+                if (pkg != null && !pkg.isEmpty()) {
+                    try {
+                        Intent open = activity.getPackageManager().getLaunchIntentForPackage(pkg);
+                        if (open != null) {
+                            open.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                            PendingIntent pi = PendingIntent.getActivity(
+                                    activity, Math.abs(slug.hashCode()) & 0x7fff, open,
+                                    PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+                            b.setContentIntent(pi);
+                            b.addAction(0, "فتح", pi);
+                        }
+                    } catch (Exception ignore) {}
+                }
+                nm.notify(id, b.build());
+                return;
+            }
+
+            boolean preparing = "installing".equals(status) || "downloaded".equals(status);
+            b = new NotificationCompat.Builder(activity, CH_DOWNLOADS)
+                    .setSmallIcon(getApplicationIconRes())
+                    .setOnlyAlertOnce(true)
+                    .setOngoing(true)
+                    .setSilent(true);
+            if (large != null) b.setLargeIcon(large);
+            if (preparing) {
+                b.setContentTitle("جارٍ تثبيت " + name)
+                        .setContentText("يتم تجهيز التطبيق للتثبيت…")
+                        .setProgress(0, 0, true);
+            } else {
+                b.setContentTitle("جارٍ تنزيل " + name);
+                if (progress >= 0) {
+                    int pct = (int) Math.max(0, Math.min(100, Math.round(progress * 100)));
+                    b.setProgress(100, pct, false);
+                    b.setContentText(pct + "%");
+                } else {
+                    b.setProgress(0, 0, true);
+                    b.setContentText("جارٍ التنزيل…");
+                }
+                // Cancel action right on the notification.
+                try {
+                    Intent cancel = new Intent(ACTION_CANCEL_DOWNLOAD);
+                    cancel.putExtra(EXTRA_SLUG, slug);
+                    cancel.setPackage(activity.getPackageName());
+                    PendingIntent pi = PendingIntent.getBroadcast(
+                            activity, Math.abs(slug.hashCode()) & 0x7fff, cancel,
+                            PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+                    b.addAction(0, "إلغاء", pi);
+                } catch (Exception ignore) {}
+            }
+            nm.notify(id, b.build());
+        } catch (Throwable t) {
+            Log.e(TAG, "updateNotification failed", t);
+        }
+    }
+
+    private int getApplicationIconRes() {
+        try {
+            return activity.getApplicationInfo().icon;
+        } catch (Exception e) {
+            return android.R.drawable.stat_sys_download;
+        }
     }
 }

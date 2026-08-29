@@ -1530,3 +1530,15 @@ section { margin: 56px 0; }
 .sk-section .sk-title { width: 40%; height: 20px; margin-bottom: 12px; }
 .sk-detail-header { display: flex; gap: 16px; padding: 16px; align-items: flex-start; }
 .sk-detail-body { padding: 0 16px; display: flex; flex-direction: column; gap: 12px; }
+/* Skeleton row for "similar apps" on the detail page */
+.sk-similar { display: flex; gap: 14px; overflow: hidden; padding: 4px 0 4px; }
+.sk-similar .sk-sim-card { display: inline-flex; flex-direction: column; gap: 8px; width: 104px; flex-shrink: 0; }
+
+/* === Smooth page entrance (professional feel, RTL/LTR agnostic) === */
+@keyframes gs-page-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: no-preference) {
+  body > #root { animation: gs-page-in .28s ease-out; }
+}

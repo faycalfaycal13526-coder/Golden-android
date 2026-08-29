@@ -221,11 +221,12 @@ function toast(msg, type = 'info', ms = 3000) {
 
 /* ----------------------------- Cards ----------------------------- */
 // Square poster card (horizontal rows)
+// <bdi> keeps Latin/mixed app names from breaking RTL punctuation order.
 function posterCard(a) {
   const rt = ratingOf(a);
   return el('a', { href: `/app?slug=${encodeURIComponent(a.slug)}`, class: 'poster' },
     el('div', { class: 'art' }, a.icon_url ? el('img', { src: a.icon_url, alt: a.name, loading: 'lazy' }) : ico('package', 'icon icon-lg')),
-    el('div', { class: 'nm' }, a.name),
+    el('div', { class: 'nm' }, el('bdi', null, a.name)),
     rt
       ? el('div', { class: 'rt' }, el('span', null, rt), ico('star', 'icon fill'))
       : el('div', { class: 'rt' }, el('span', null, t('جديد'))),
@@ -239,8 +240,8 @@ function listRow(a, opts = {}) {
   return el('a', { href: `/app?slug=${encodeURIComponent(a.slug)}`, class: 'approw' },
     el('div', { class: 'art' }, a.icon_url ? el('img', { src: a.icon_url, alt: a.name, loading: 'lazy' }) : ico('package', 'icon icon-lg')),
     el('div', { class: 'info' },
-      el('div', { class: 'nm' }, a.name),
-      el('div', { class: 'sub' }, a.developer || cat || STORE.name),
+      el('div', { class: 'nm' }, el('bdi', null, a.name)),
+      el('div', { class: 'sub' }, el('bdi', null, a.developer || cat || STORE.name)),
       el('div', { class: 'meta-line' },
         rt ? el('span', null, rt) : el('span', null, t('جديد')),
         rt ? ico('star', 'icon fill') : null,
@@ -260,7 +261,7 @@ function gridCard(a) {
   return el('a', { href: `/app?slug=${encodeURIComponent(a.slug)}`, class: 'grid-card' },
     el('div', { class: 'grid-art' }, a.icon_url ? el('img', { src: a.icon_url, alt: a.name, loading: 'lazy' }) : ico('package', 'icon icon-lg')),
     el('div', { class: 'grid-info' },
-      el('div', { class: 'grid-name' }, a.name),
+      el('div', { class: 'grid-name' }, el('bdi', null, a.name)),
       el('div', { class: 'grid-meta' }, `${a.version_name ? 'v' + a.version_name : ''}${a.version_name ? ' • ' : ''}${formatBytes(a.size_bytes || 0)}`),
       el('div', { class: 'grid-rating' },
         rt ? el('span', null, rt) : el('span', null, t('جديد')),
@@ -500,6 +501,19 @@ function skeletonList() {
   }
   return wrap;
 }
+// Poster-row skeleton for the "similar apps" section of the detail page.
+function skeletonSimilar() {
+  const row = el('div', { class: 'sk-similar' });
+  for (let i = 0; i < 4; i++) {
+    const c = el('div', { class: 'sk-sim-card' });
+    c.append(el('div', { class: 'sk-card', style: { width: '104px', height: '104px', borderRadius: '20px' } }));
+    c.append(skEl('84px', '10px'));
+    row.append(c);
+  }
+  const wrap = el('div', { class: 'd-section' }, skEl('35%', '16px'), row);
+  wrap.style.padding = '16px';
+  return wrap;
+}
 function emptyState(title, hint, icon = 'package') {
   return el('div', { class: 'empty' }, ico(icon, 'icon'), el('h3', null, title), hint ? el('p', null, hint) : null);
 }
@@ -667,9 +681,15 @@ function topbarSearch(user) {
 }
 
 // Back/title top bar (detail)
+// Smart back: return to wherever the user came from (search, home, games…);
+// only fall back to the home page when this page was opened directly
+// (deep link / cold start), where history.back() has nowhere to go.
 function topbarNav(title = '', actions = []) {
   return el('div', { class: 'topbar-nav' },
-    el('button', { class: 'icon-btn', 'aria-label': t('رجوع'), onclick: () => history.length > 1 ? history.back() : (location.href = '/') }, ico('chevronEnd')),
+    el('button', { class: 'icon-btn', 'aria-label': t('رجوع'), onclick: () => {
+      if (document.referrer && history.length > 1) history.back();
+      else location.href = '/';
+    } }, ico('chevronEnd')),
     title ? el('div', { class: 'title' }, title) : el('div', { class: 'spacer' }),
     ...actions,
   );
@@ -1412,7 +1432,7 @@ window.Store = {
   formatBytes, formatCount, formatNum, formatDate, ratingOf, ratingValue, ratingCountOf, getQuery, toast,
   publicOrigin,
   posterCard, listRow, gridCard, featureCarousel, categoryName,
-  spinner, skeletonHome, skeletonDetail, skeletonList, emptyState, errorState,
+  spinner, skeletonHome, skeletonDetail, skeletonList, skeletonSimilar, emptyState, errorState,
   topbarSearch, topbarNav, bottomNav, avatarEl, themeToggleBtn, langSwitcherEl, toggleTheme, currentTheme,
   fetchNotifications, notifUnreadCount, openNotifications,
   ready, signOut, getUser: () => _user, isLoggedIn, requireAuth, goToLogin,
