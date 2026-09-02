@@ -65,6 +65,7 @@
     'تم التثبيت': { en: 'Installed', fr: 'Installé', es: 'Instalado' },
     'إلغاء التثبيت': { en: 'Uninstall', fr: 'Désinstaller', es: 'Desinstalar' },
     'تم إلغاء تثبيت التطبيق': { en: 'App uninstalled', fr: 'Application désinstallée', es: 'Aplicación desinstalada' },
+    'جارٍ إلغاء التثبيت…': { en: 'Uninstalling…', fr: 'Désinstallation…', es: 'Desinstalando…' },
     'التطبيق غير مثبت على هذا الجهاز': { en: 'App is not installed on this device', fr: 'L’application n’est pas installée sur cet appareil', es: 'La aplicación no está instalada en este dispositivo' },
     'تعذّر فتح التطبيق': { en: 'Couldn’t open the app', fr: 'Impossible d’ouvrir l’application', es: 'No se pudo abrir la aplicación' },
     'غير متاح في هذا المتصفح': { en: 'Not available in this browser', fr: 'Non disponible dans ce navigateur', es: 'No disponible en este navegador' },

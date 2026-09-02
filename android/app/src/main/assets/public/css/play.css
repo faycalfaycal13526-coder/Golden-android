@@ -1934,3 +1934,23 @@ input, select { font-family: inherit; }
 .points-banner-info { flex: 1; min-width: 0; }
 .points-banner-title { font-weight: 800; color: var(--text); font-size: 15px; }
 .points-banner-sub { font-size: 12px; color: var(--text-2); margin-top: 2px; }
+
+/* ===== Library: installed-row Open/Uninstall actions (Google Play style) ===== */
+.lib-installed-actions {
+  display: flex; flex-direction: column; align-items: stretch; gap: 6px;
+  min-width: 104px;
+}
+.lib-installed-actions .btn {
+  font-size: 12px; font-weight: 700; padding: 7px 12px;
+  border-radius: 999px; display: inline-flex; align-items: center;
+  justify-content: center; gap: 5px; line-height: 1.2;
+}
+.lib-installed-actions .btn .icon { width: 14px; height: 14px; }
+.lib-installed-actions .btn-secondary {
+  border-color: var(--line); color: var(--text-2); background: var(--surface);
+}
+.lib-installed-actions .btn-secondary:active { background: var(--surface-2); }
+@media (max-width: 360px) {
+  .lib-installed-actions { min-width: 92px; }
+  .lib-installed-actions .btn { padding: 6px 9px; font-size: 11px; }
+}

@@ -4,6 +4,13 @@
   const { el, ico, formatBytes, formatDate, toast, t, getQuery } = S;
   const root = document.getElementById('root');
 
+  const isNativeApp = () => !!(window.GSAndroid && typeof window.GSAndroid.downloadApk === 'function');
+
+  // Module-level refs so native package events can refresh library rows after
+  // renderLibraryPage runs (bound once per page load — no listener leaks).
+  let libListRef = null;
+  let libRefreshRowRef = null;
+
   // Determine which view to show based on URL param
   const tabParam = getQuery('tab');
   const isLibraryView = tabParam === 'library';
@@ -31,6 +38,7 @@
 
   // --- Library page (standalone, accessed from bottom nav) ---
   function renderLibraryPage(content) {
+    bindLibraryPackageEvents();
     content.append(el('div', { class: 'page-title', style: { padding: '16px' } }, t('مكتبتي')));
     const body = el('div', { class: 'acct-body' });
     content.append(body);
@@ -70,13 +78,67 @@
     body.append(header);
 
     const list = el('div', { class: 'lib-list' });
-    history.forEach((item) => {
-      // Real device check with full fallback chain (v1.9): metadata package →
-      // native slug registry → resolved package learned from real installs.
+
+    // Device truth for one library item — full fallback chain (v1.9):
+    // metadata package → native slug registry → resolved package learned
+    // from real installs. Returns { installed, pkg }.
+    function deviceStateFor(item) {
       const resolved = S.resolvedPackageName ? S.resolvedPackageName(item.slug) : '';
       let deviceVer = S.installedVersionOnDevice(item.package_name || '');
       if (!deviceVer && resolved) deviceVer = S.installedVersionOnDevice(resolved);
       if (!deviceVer) deviceVer = S.isSlugInstalled(item.slug);
+      const pkg = resolved || item.package_name || '';
+      return { installed: !!deviceVer, pkg };
+    }
+
+    // Google Play style end state for installed apps: Open + Uninstall
+    // buttons directly in the library row (mirrors the app detail page).
+    function buildAction(item) {
+      const st = deviceStateFor(item);
+      if (st.installed && isNativeApp() && st.pkg) {
+        return el('div', { class: 'lib-installed-actions', 'data-pkg': st.pkg },
+          el('button', {
+            class: 'btn btn-primary btn-sm', type: 'button',
+            onclick: (e) => {
+              e.preventDefault(); e.stopPropagation();
+              try { window.GSAndroid.openInstalledApp(st.pkg, item.slug || ''); } catch (err) {}
+            },
+          }, ico('play', 'icon icon-sm'), t('فتح')),
+          el('button', {
+            class: 'btn btn-secondary btn-sm', type: 'button',
+            onclick: (e) => {
+              e.preventDefault(); e.stopPropagation();
+              try {
+                window.GSAndroid.uninstallApp(st.pkg);
+                toast(t('جارٍ إلغاء التثبيت…'), 'info');
+              } catch (err) {}
+            },
+          }, ico('trash', 'icon icon-sm'), t('إلغاء التثبيت')),
+        );
+      }
+      if (st.installed) {
+        return el('span', { class: 'lib-installed-badge' }, ico('check', 'icon icon-sm'), t('مثبّت'));
+      }
+      return el('span', { class: 'lib-open-btn' }, ico('chevronStart', 'icon icon-sm'));
+    }
+
+    // Re-evaluate one row against the device (install state changed live).
+    function refreshRow(slug) {
+      const item = history.find((h) => h.slug === slug);
+      if (!item || !list.isConnected) return;
+      const rowEl = list.querySelector('.lib-row[data-slug="' + CSS.escape(slug) + '"]');
+      if (!rowEl) return;
+      const act = rowEl.querySelector('.lib-action');
+      if (!act) return;
+      act.innerHTML = '';
+      act.append(buildAction(item));
+      // Keep the local registry in sync with the device.
+      const st = deviceStateFor(item);
+      if (st.installed) S.markInstalledStored(item.slug);
+      else if (S.unmarkInstalledStored) S.unmarkInstalledStored(item.slug);
+    }
+
+    history.forEach((item) => {
       const row = el('a', { href: `/app?slug=${encodeURIComponent(item.slug)}`, class: 'lib-row' },
         el('div', { class: 'art' },
           item.icon_url
@@ -92,15 +154,44 @@
             el('span', null, formatDate(item.downloaded_at)),
           ),
         ),
-        el('div', { class: 'lib-action' },
-          deviceVer
-            ? el('span', { class: 'lib-installed-badge' }, ico('check', 'icon icon-sm'), t('مثبّت'))
-            : el('span', { class: 'lib-open-btn' }, ico('chevronStart', 'icon icon-sm')),
-        ),
+        el('div', { class: 'lib-action' }, buildAction(item)),
       );
+      row.setAttribute('data-slug', item.slug || '');
       list.append(row);
     });
     body.append(list);
+
+    // Expose refs for the native event listeners (bound once at module scope).
+    libListRef = list;
+    libRefreshRowRef = refreshRow;
+  }
+
+  // --- Native package events → live library row refresh ---
+  // When the user uninstalls (system dialog) or an install completes while
+  // the library is open, the affected rows flip between
+  // [فتح | إلغاء التثبيت] and the plain state WITHOUT a page reload.
+  let libEventsBound = false;
+  function bindLibraryPackageEvents() {
+    if (libEventsBound) return;
+    libEventsBound = true;
+    window.addEventListener('gs-package-uninstalled', (e) => {
+      const pkg = e && e.detail && e.detail.packageName;
+      if (!pkg || !libListRef || !libListRef.isConnected || !libRefreshRowRef) return;
+      libListRef.querySelectorAll('.lib-installed-actions').forEach((act) => {
+        if (act.getAttribute('data-pkg') !== pkg) return;
+        const rowEl = act.closest('.lib-row');
+        const slug = rowEl && rowEl.getAttribute('data-slug');
+        if (slug) libRefreshRowRef(slug);
+      });
+    });
+    if (S.onApkState) {
+      S.onApkState((evt) => {
+        const slug = evt && evt.slug;
+        const status = evt && evt.status;
+        if (!slug || !libListRef || !libListRef.isConnected || !libRefreshRowRef) return;
+        if (status === 'installed' || status === 'uninstalled') libRefreshRowRef(slug);
+      });
+    }
   }
 
   // --- Live downloads section (library) ---
