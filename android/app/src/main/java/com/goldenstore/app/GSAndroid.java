@@ -132,6 +132,22 @@ public class GSAndroid {
         registerCancelReceiver();
     }
 
+    public void onDestroy() {
+        if (cancelReceiverRegistered && cancelReceiver != null) {
+            try {
+                activity.unregisterReceiver(cancelReceiver);
+            } catch (Throwable ignore) {}
+            cancelReceiverRegistered = false;
+            cancelReceiver = null;
+        }
+        for (ScheduledFuture<?> watcher : installWatchers.values()) {
+            try {
+                if (watcher != null) watcher.cancel(true);
+            } catch (Throwable ignore) {}
+        }
+        installWatchers.clear();
+    }
+
     public void setGoogleSignInClient(GoogleSignInClient client) {
         this.googleSignInClient = client;
     }
@@ -563,19 +579,14 @@ public class GSAndroid {
             String apkPackage = apkInfo.packageName;
             if (apkPackage == null || apkPackage.isEmpty()) return "apk_parse_failed";
 
-            // For an expected package, only enforce package/signature when the
-            // app is already installed (it is an update). A fresh install can
-            // use any valid package name.
-            if (expectedPackage != null && !expectedPackage.isEmpty()) {
-                try {
-                    PackageInfo installedInfo = pm.getPackageInfo(expectedPackage, flags);
-                    if (installedInfo != null) {
-                        if (!apkPackage.equals(expectedPackage)) return "package_mismatch";
-                        byte[][] apkSigs = getSignatures(apkInfo);
-                        byte[][] installedSigs = getSignatures(installedInfo);
-                        if (apkSigs == null || installedSigs == null || apkSigs.length == 0 || installedSigs.length == 0) {
-                            return null;
-                        }
+            // If an app with apkPackage is already installed on the device, check signature compatibility.
+            // Fresh installs or installs where the catalog metadata differs from apkPackage must not be blocked.
+            try {
+                PackageInfo installedInfo = pm.getPackageInfo(apkPackage, flags);
+                if (installedInfo != null) {
+                    byte[][] apkSigs = getSignatures(apkInfo);
+                    byte[][] installedSigs = getSignatures(installedInfo);
+                    if (apkSigs != null && installedSigs != null && apkSigs.length > 0 && installedSigs.length > 0) {
                         for (byte[] a : apkSigs) {
                             boolean found = false;
                             for (byte[] b : installedSigs) {
@@ -584,35 +595,12 @@ public class GSAndroid {
                             if (!found) return "signature_mismatch";
                         }
                     }
-                } catch (PackageManager.NameNotFoundException e) {
-                    // not installed, fresh install is fine
                 }
-                return null;
-            }
-
-            // No expected package supplied: allow fresh installs, but block
-            // signature mismatches when an app with the same package is already installed.
-            try {
-                PackageInfo installedInfo = pm.getPackageInfo(apkPackage, flags);
-                if (installedInfo != null) {
-                    byte[][] apkSigs = getSignatures(apkInfo);
-                    byte[][] installedSigs = getSignatures(installedInfo);
-                    if (apkSigs == null || installedSigs == null || apkSigs.length == 0 || installedSigs.length == 0) {
-                        return null;
-                    }
-                    for (byte[] a : apkSigs) {
-                        boolean found = false;
-                        for (byte[] b : installedSigs) {
-                            if (Arrays.equals(a, b)) { found = true; break; }
-                        }
-                        if (!found) return "signature_mismatch";
-                    }
-                }
-            } catch (PackageManager.NameNotFoundException e) {
-                // not installed, fresh install is fine
+            } catch (PackageManager.NameNotFoundException ignored) {
+                // Fresh install, no conflict
             }
             return null;
-        } catch (Exception e) {
+        } catch (Throwable e) {
             Log.e(TAG, "Signature check failed", e);
             return null;
         }
@@ -711,11 +699,19 @@ public class GSAndroid {
     @JavascriptInterface
     public void uninstallApp(final String packageName, final String slug) {
         String pkg = (packageName != null && !packageName.trim().isEmpty()) ? packageName.trim() : "";
-        if (pkg.isEmpty() && slug != null && !slug.isEmpty()) {
-            pkg = installedPrefs.getString(slug, "");
+        // If package from caller is not currently installed, check installedPrefs for the real device package
+        if (pkg.isEmpty() || isPackageInstalledInternal(pkg).isEmpty()) {
+            if (slug != null && !slug.isEmpty()) {
+                String saved = installedPrefs.getString(slug, "");
+                if (saved != null && !saved.isEmpty() && !isPackageInstalledInternal(saved).isEmpty()) {
+                    pkg = saved;
+                } else if (pkg.isEmpty()) {
+                    pkg = saved;
+                }
+            }
         }
-        if (pkg.isEmpty()) {
-            Log.e(TAG, "uninstallApp: cannot resolve package for slug=" + slug);
+        if (pkg == null || pkg.isEmpty()) {
+            Log.e(TAG, "uninstallApp: cannot resolve package for slug=" + slug + ", passed pkg=" + packageName);
             return;
         }
         final String targetPkg = pkg;
@@ -723,29 +719,29 @@ public class GSAndroid {
             boolean started = false;
             try {
                 Intent intent = new Intent(Intent.ACTION_DELETE);
-                intent.setData(Uri.parse("package:" + targetPkg));
+                intent.setData(Uri.fromParts("package", targetPkg, null));
                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                 activity.startActivity(intent);
                 started = true;
-            } catch (Exception e) {
+            } catch (Throwable e) {
                 Log.w(TAG, "ACTION_DELETE failed for " + targetPkg + ", trying ACTION_UNINSTALL_PACKAGE", e);
                 try {
                     Intent intent = new Intent(Intent.ACTION_UNINSTALL_PACKAGE);
-                    intent.setData(Uri.parse("package:" + targetPkg));
+                    intent.setData(Uri.fromParts("package", targetPkg, null));
                     intent.putExtra(Intent.EXTRA_RETURN_RESULT, true);
                     intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                     activity.startActivity(intent);
                     started = true;
-                } catch (Exception e2) {
+                } catch (Throwable e2) {
                     Log.e(TAG, "ACTION_UNINSTALL_PACKAGE also failed for " + targetPkg, e2);
+                    try {
+                        Intent intent = new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+                        intent.setData(Uri.fromParts("package", targetPkg, null));
+                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                        activity.startActivity(intent);
+                        started = true;
+                    } catch (Throwable ignore) {}
                 }
-            }
-            if (started && !targetPkg.equals(activity.getPackageName())) {
-                removeInstalledRegistryByPackage(targetPkg);
-                if (slug != null && !slug.isEmpty()) {
-                    installedPrefs.edit().remove(slug).apply();
-                }
-                emitPackageEvent(targetPkg);
             }
         });
     }
@@ -948,16 +944,14 @@ public class GSAndroid {
                 String real = readApkPackageName(downloadFile(p.optString("filename", "")));
                 if (real != null && !real.isEmpty()) pkg = real;
             }
+            String savedPkg = installedPrefs.getString(slug, "");
+            if (!savedPkg.isEmpty() && !isPackageInstalledInternal(savedPkg).isEmpty()) {
+                pkg = savedPkg;
+            }
             if (pkg.isEmpty()) {
-                // No package name anywhere and nothing to verify: this state
-                // can never be resolved on the device. Drop it (with a UI
-                // reset) instead of showing "جارٍ التثبيت" forever.
-                if ("installing".equals(status) || "downloaded".equals(status)) {
-                    it.remove();
-                    dirty = true;
-                    final String s = slug;
-                    mainHandler.post(() -> emit(s, "failed", -1, "file_missing"));
-                }
+                // No package name anywhere: drop stale state silently without false failed error
+                it.remove();
+                dirty = true;
                 continue;
             }
             try { p.put("package_name", pkg); } catch (Exception ignore) {}

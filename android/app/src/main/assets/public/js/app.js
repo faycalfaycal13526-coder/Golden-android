@@ -548,6 +548,10 @@
         return;
       }
       if (status === 'failed') {
+        const isInstalled = (S.installedVersionOnDevice && S.installedVersionOnDevice(realPackage(app))) || (S.isSlugInstalled && S.isSlugInstalled(app.slug));
+        if (isInstalled) {
+          return;
+        }
         S.removeActiveDownload(app.slug);
         showIdle();
         toast(errMap[message] || t('تعذّر التنزيل، حاول مجدداً'), 'error');

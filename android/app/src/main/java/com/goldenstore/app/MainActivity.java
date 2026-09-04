@@ -87,16 +87,20 @@ public class MainActivity extends BridgeActivity {
                         pendingNotificationExtra = null;
                     }
                     // Make sure the FCM token is requested and forwarded to the web layer.
-                    FirebaseMessaging.getInstance().getToken().addOnCompleteListener(task -> {
-                        if (!task.isSuccessful()) {
-                            Log.e("MainActivity", "getToken failed", task.getException());
-                            return;
-                        }
-                        String token = task.getResult();
-                        if (token != null && !token.isEmpty()) {
-                            setPendingPushToken(token);
-                        }
-                    });
+                    try {
+                        FirebaseMessaging.getInstance().getToken().addOnCompleteListener(task -> {
+                            if (!task.isSuccessful()) {
+                                Log.e("MainActivity", "getToken failed", task.getException());
+                                return;
+                            }
+                            String token = task.getResult();
+                            if (token != null && !token.isEmpty()) {
+                                setPendingPushToken(token);
+                            }
+                        });
+                    } catch (Throwable t) {
+                        Log.e("MainActivity", "Firebase getToken error", t);
+                    }
                 }
 
                 @Override
@@ -125,14 +129,17 @@ public class MainActivity extends BridgeActivity {
 
     private void setupGoogleSignIn() {
         try {
-            String serverClientId = getString(R.string.default_web_client_id);
+            int stringResId = getResources().getIdentifier("default_web_client_id", "string", getPackageName());
+            String serverClientId = stringResId != 0 ? getString(stringResId) : "792594765257-v3687311m403a45c36ghg81qslj0c78a.apps.googleusercontent.com";
             GoogleSignInOptions gso = new GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
                     .requestIdToken(serverClientId)
                     .requestEmail()
                     .build();
             googleSignInClient = GoogleSignIn.getClient(this, gso);
-            gsAndroid.setGoogleSignInClient(googleSignInClient);
-        } catch (Exception e) {
+            if (gsAndroid != null) {
+                gsAndroid.setGoogleSignInClient(googleSignInClient);
+            }
+        } catch (Throwable e) {
             Log.e("MainActivity", "Google Sign-In setup failed", e);
         }
     }
@@ -141,11 +148,20 @@ public class MainActivity extends BridgeActivity {
     public void onDestroy() {
         currentActivity.clear();
         if (packageReceiver != null) {
-            unregisterReceiver(packageReceiver);
+            try {
+                unregisterReceiver(packageReceiver);
+            } catch (Throwable ignore) {}
             packageReceiver = null;
         }
+        if (gsAndroid != null) {
+            try {
+                gsAndroid.onDestroy();
+            } catch (Throwable ignore) {}
+        }
         if (getBridge() != null && pageListener != null) {
-            getBridge().removeWebViewListener(pageListener);
+            try {
+                getBridge().removeWebViewListener(pageListener);
+            } catch (Throwable ignore) {}
             pageListener = null;
         }
         super.onDestroy();
@@ -234,17 +250,22 @@ public class MainActivity extends BridgeActivity {
     }
 
     public void requestInstallPackages(Runnable onGranted, String slug) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            if (getPackageManager().canRequestPackageInstalls()) {
-                onGranted.run();
-                return;
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                if (getPackageManager().canRequestPackageInstalls()) {
+                    if (onGranted != null) onGranted.run();
+                    return;
+                }
+                pendingInstallAction = onGranted;
+                pendingInstallSlug = slug;
+                Intent intent = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + getPackageName()));
+                startActivityForResult(intent, INSTALL_PACKAGES_REQUEST);
+            } else {
+                if (onGranted != null) onGranted.run();
             }
-            pendingInstallAction = onGranted;
-            pendingInstallSlug = slug;
-            Intent intent = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + getPackageName()));
-            startActivityForResult(intent, INSTALL_PACKAGES_REQUEST);
-        } else {
-            onGranted.run();
+        } catch (Throwable t) {
+            Log.e("MainActivity", "requestInstallPackages error", t);
+            if (onGranted != null) onGranted.run();
         }
     }
 
@@ -275,30 +296,40 @@ public class MainActivity extends BridgeActivity {
     }
 
     private void registerPackageReceiver() {
-        packageReceiver = new PackageChangeReceiver();
-        IntentFilter filter = new IntentFilter();
-        filter.addAction(Intent.ACTION_PACKAGE_ADDED);
-        filter.addAction(Intent.ACTION_PACKAGE_REPLACED);
-        filter.addAction(Intent.ACTION_PACKAGE_REMOVED);
-        filter.addDataScheme("package");
-        // IMPORTANT: PACKAGE_ADDED/REMOVED/REPLACED are protected system
-        // broadcasts — only the OS can send them. On Android 13/14 several
-        // vendor builds do NOT deliver them to receivers registered with
-        // RECEIVER_NOT_EXPORTED, which is why "جارٍ التثبيت" never flipped to
-        // فتح/إلغاء التثبيت. RECEIVER_EXPORTED is required (and safe: the
-        // platform rejects any non-system sender of these actions).
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            ContextCompat.registerReceiver(this, packageReceiver, filter, ContextCompat.RECEIVER_EXPORTED);
-        } else {
-            registerReceiver(packageReceiver, filter);
+        try {
+            packageReceiver = new PackageChangeReceiver();
+            IntentFilter filter = new IntentFilter();
+            filter.addAction(Intent.ACTION_PACKAGE_ADDED);
+            filter.addAction(Intent.ACTION_PACKAGE_REPLACED);
+            filter.addAction(Intent.ACTION_PACKAGE_REMOVED);
+            filter.addDataScheme("package");
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                try {
+                    ContextCompat.registerReceiver(this, packageReceiver, filter, ContextCompat.RECEIVER_EXPORTED);
+                } catch (SecurityException se) {
+                    try {
+                        ContextCompat.registerReceiver(this, packageReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED);
+                    } catch (SecurityException se2) {
+                        registerReceiver(packageReceiver, filter);
+                    }
+                }
+            } else {
+                registerReceiver(packageReceiver, filter);
+            }
+        } catch (Throwable t) {
+            Log.e("MainActivity", "registerPackageReceiver failed", t);
         }
     }
 
     private void requestNotificationPermission() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-                ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.POST_NOTIFICATIONS}, POST_NOTIFICATIONS_REQUEST);
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                    ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.POST_NOTIFICATIONS}, POST_NOTIFICATIONS_REQUEST);
+                }
             }
+        } catch (Throwable t) {
+            Log.e("MainActivity", "requestNotificationPermission error", t);
         }
     }
 }

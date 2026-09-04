@@ -696,17 +696,23 @@ input, select { font-family: inherit; }
 }
 .gate > * { flex-shrink: 0; }
 .gate .logo {
-  width: 104px; height: 104px; border-radius: 26px; overflow: hidden;
-  box-shadow: 0 12px 40px rgba(0,0,0,.5);
-  margin-bottom: 22px;
-  background: linear-gradient(160deg, #ffe9a8 0%, #f4c01f 60%, #b8860b 100%);
-  padding: 6px;
+  width: 110px; height: 110px; border-radius: 0; overflow: visible;
+  box-shadow: none;
+  margin: 0 auto 20px auto;
+  background: transparent;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 .gate .logo img {
   width: 100%; height: 100%;
   object-fit: contain;
-  border-radius: 20px;
-  background: radial-gradient(circle at 50% 30%, rgba(255,255,255,.18), transparent 60%);
+  border-radius: 0;
+  background: transparent;
+  display: block;
+  margin: 0 auto;
+  filter: drop-shadow(0 6px 18px rgba(0,0,0,.35));
 }
 .gate h1 {
   font-size: 28px; font-weight: 800; letter-spacing: -.01em;
@@ -1128,7 +1134,9 @@ input, select { font-family: inherit; }
   .gate .logo {
     width: 120px;
     height: 120px;
-    border-radius: 28px;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
   }
   .gate h1 {
     font-size: 32px;
@@ -1778,12 +1786,23 @@ input, select { font-family: inherit; }
 }
 .auth-required-header { margin-bottom: 24px; display: flex; flex-direction: column; align-items: center; width: 100%; }
 .auth-logo {
-  width: 72px; height: 72px; border-radius: 18px; margin: 0 auto 16px;
-  background: linear-gradient(160deg, #ffe9a8 0%, #f4c01f 60%, #b8860b 100%);
-  padding: 4px;
-  box-shadow: 0 8px 22px rgba(0,0,0,.28);
+  width: 76px; height: 76px; border-radius: 0; margin: 0 auto 16px;
+  background: transparent;
+  padding: 0;
+  box-shadow: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
-.auth-logo img { width: 100%; height: 100%; object-fit: contain; border-radius: 14px; }
+.auth-logo img {
+  width: 100%; height: 100%;
+  object-fit: contain;
+  border-radius: 0;
+  background: transparent;
+  display: block;
+  margin: 0 auto;
+  filter: drop-shadow(0 4px 14px rgba(0,0,0,.3));
+}
 .auth-title { font-size: 20px; font-weight: 700; margin: 0 0 10px; }
 .auth-desc { font-size: 14px; color: var(--text-2); line-height: 1.6; margin: 0 0 4px; }
 .auth-google-btn {

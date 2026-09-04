@@ -1060,6 +1060,10 @@ window.__gsApkDownloadUpdate = function (slug, status, progress, message) {
         // carries the REAL resolved package name (native ground truth).
         applyInstalled(slug, message || '');
       } else if (status === 'cancelled' || status === 'failed') {
+        const isInst = (typeof isSlugInstalled === 'function' && isSlugInstalled(slug)) || (typeof resolvedPackageName === 'function' && resolvedPackageName(slug) && typeof isPackageInstalled === 'function' && isPackageInstalled(resolvedPackageName(slug)));
+        if (isInst && status === 'failed') {
+          return;
+        }
         removeApkState(slug);
         removeActiveDownload(slug);
       }
