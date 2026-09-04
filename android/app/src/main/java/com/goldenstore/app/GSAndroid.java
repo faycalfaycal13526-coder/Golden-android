@@ -48,6 +48,11 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import org.json.JSONObject;
+import android.content.pm.ResolveInfo;
+import java.util.List;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Golden Store — native JS bridge.
@@ -83,6 +88,8 @@ public class GSAndroid {
     // Dedicated thread for notification work (icon fetching must never block
     // the download executor nor the UI thread).
     private final ExecutorService notifExecutor = Executors.newSingleThreadExecutor();
+    private final ScheduledExecutorService watcherScheduler = Executors.newSingleThreadScheduledExecutor();
+    private final Map<String, ScheduledFuture<?>> installWatchers = new ConcurrentHashMap<>();
     private final Map<String, DownloadState> active = new ConcurrentHashMap<>();
     private final Map<String, JSONObject> persisted = new ConcurrentHashMap<>();
     private final Map<String, Bitmap> iconCache = new ConcurrentHashMap<>();
@@ -457,6 +464,51 @@ public class GSAndroid {
      * Install step
      * ------------------------------------------------------------------ */
 
+        private void startInstallWatcher(final String slug, final String packageName, final File apkFile) {
+        if (slug == null || slug.isEmpty()) return;
+        ScheduledFuture<?> prev = installWatchers.remove(slug);
+        if (prev != null) prev.cancel(true);
+
+        final long startTime = System.currentTimeMillis();
+        final long MAX_WATCH_TIME_MS = 120000L;
+
+        ScheduledFuture<?> future = watcherScheduler.scheduleWithFixedDelay(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    if (System.currentTimeMillis() - startTime > MAX_WATCH_TIME_MS) {
+                        ScheduledFuture<?> f = installWatchers.remove(slug);
+                        if (f != null) f.cancel(false);
+                        return;
+                    }
+
+                    String targetPkg = packageName;
+                    if (targetPkg == null || targetPkg.isEmpty()) {
+                        targetPkg = readApkPackageName(apkFile);
+                    }
+                    if (targetPkg == null || targetPkg.isEmpty()) {
+                        targetPkg = installedPrefs.getString(slug, "");
+                    }
+
+                    if (targetPkg != null && !targetPkg.isEmpty()) {
+                        String ver = isPackageInstalledInternal(targetPkg);
+                        if (!ver.isEmpty()) {
+                            Log.i(TAG, "Install detected via active watcher for slug=" + slug + ", pkg=" + targetPkg);
+                            ScheduledFuture<?> f = installWatchers.remove(slug);
+                            if (f != null) f.cancel(false);
+                            final String resolved = targetPkg;
+                            mainHandler.post(() -> markStateInstalled(slug, resolved));
+                        }
+                    }
+                } catch (Throwable t) {
+                    Log.e(TAG, "Error in install watcher for " + slug, t);
+                }
+            }
+        }, 500, 800, TimeUnit.MILLISECONDS);
+
+        installWatchers.put(slug, future);
+    }
+
     private void installApk(File file, String slug, String packageName) {
         if (file == null || !file.exists()) {
             emit(slug, "failed", -1, "file_missing");
@@ -488,6 +540,7 @@ public class GSAndroid {
                     intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
                 }
                 activity.startActivity(intent);
+                startInstallWatcher(slug, packageName, file);
             } catch (Exception e) {
                 Log.e(TAG, "Install failed for " + slug, e);
                 active.remove(slug);
@@ -602,50 +655,97 @@ public class GSAndroid {
      * not present on the device.
      */
     @JavascriptInterface
+    public void openInstalledApp(final String packageName) {
+        openInstalledApp(packageName, null);
+    }
+
+    @JavascriptInterface
     public void openInstalledApp(final String packageName, final String slug) {
-        if (packageName == null || packageName.isEmpty()) {
+        String pkg = (packageName != null && !packageName.trim().isEmpty()) ? packageName.trim() : "";
+        if (pkg.isEmpty() && slug != null && !slug.isEmpty()) {
+            pkg = installedPrefs.getString(slug, "");
+        }
+        if (pkg.isEmpty()) {
+            Log.e(TAG, "openInstalledApp: cannot resolve package for slug=" + slug);
             emit(slug == null ? "" : slug, "open_failed", -1, null);
             return;
         }
+        final String targetPkg = pkg;
         activity.runOnUiThread(() -> {
             try {
-                Intent intent = activity.getPackageManager().getLaunchIntentForPackage(packageName);
+                PackageManager pm = activity.getPackageManager();
+                Intent intent = pm.getLaunchIntentForPackage(targetPkg);
                 if (intent == null) {
+                    Intent queryIntent = new Intent(Intent.ACTION_MAIN, null);
+                    queryIntent.addCategory(Intent.CATEGORY_LAUNCHER);
+                    queryIntent.setPackage(targetPkg);
+                    List<ResolveInfo> activities = pm.queryIntentActivities(queryIntent, 0);
+                    if (activities != null && !activities.isEmpty()) {
+                        ResolveInfo resolveInfo = activities.get(0);
+                        intent = new Intent(Intent.ACTION_MAIN);
+                        intent.addCategory(Intent.CATEGORY_LAUNCHER);
+                        intent.setClassName(resolveInfo.activityInfo.packageName, resolveInfo.activityInfo.name);
+                    }
+                }
+                if (intent == null) {
+                    Log.e(TAG, "No launcher activity found for package: " + targetPkg);
                     emit(slug == null ? "" : slug, "open_failed", -1, null);
                     return;
                 }
-                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
                 activity.startActivity(intent);
             } catch (ActivityNotFoundException e) {
                 emit(slug == null ? "" : slug, "open_failed", -1, null);
             } catch (Exception e) {
-                Log.e(TAG, "openInstalledApp failed for " + packageName, e);
+                Log.e(TAG, "openInstalledApp failed for " + targetPkg, e);
                 emit(slug == null ? "" : slug, "open_failed", -1, null);
             }
         });
     }
 
-    /**
-     * Opens the system uninstall dialog for the given package. When the user
-     * confirms, the package receiver also fires 'uninstalled' (see below);
-     * this immediate 'uninstalled' event keeps the UI in sync right away.
-     */
     @JavascriptInterface
     public void uninstallApp(final String packageName) {
-        if (packageName == null || packageName.isEmpty()) return;
+        uninstallApp(packageName, null);
+    }
+
+    @JavascriptInterface
+    public void uninstallApp(final String packageName, final String slug) {
+        String pkg = (packageName != null && !packageName.trim().isEmpty()) ? packageName.trim() : "";
+        if (pkg.isEmpty() && slug != null && !slug.isEmpty()) {
+            pkg = installedPrefs.getString(slug, "");
+        }
+        if (pkg.isEmpty()) {
+            Log.e(TAG, "uninstallApp: cannot resolve package for slug=" + slug);
+            return;
+        }
+        final String targetPkg = pkg;
         activity.runOnUiThread(() -> {
+            boolean started = false;
             try {
                 Intent intent = new Intent(Intent.ACTION_DELETE);
-                intent.setData(Uri.parse("package:" + packageName));
+                intent.setData(Uri.parse("package:" + targetPkg));
                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                 activity.startActivity(intent);
-                if (packageName.equals(activity.getPackageName())) return; // never mark our own app removed preemptively
-                // Drop the slug(s) mapped to this package from the installed
-                // registry immediately so the UI flips back to "تثبيت".
-                removeInstalledRegistryByPackage(packageName);
-                emitPackageEvent(packageName);
+                started = true;
             } catch (Exception e) {
-                Log.e(TAG, "uninstallApp failed for " + packageName, e);
+                Log.w(TAG, "ACTION_DELETE failed for " + targetPkg + ", trying ACTION_UNINSTALL_PACKAGE", e);
+                try {
+                    Intent intent = new Intent(Intent.ACTION_UNINSTALL_PACKAGE);
+                    intent.setData(Uri.parse("package:" + targetPkg));
+                    intent.putExtra(Intent.EXTRA_RETURN_RESULT, true);
+                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    activity.startActivity(intent);
+                    started = true;
+                } catch (Exception e2) {
+                    Log.e(TAG, "ACTION_UNINSTALL_PACKAGE also failed for " + targetPkg, e2);
+                }
+            }
+            if (started && !targetPkg.equals(activity.getPackageName())) {
+                removeInstalledRegistryByPackage(targetPkg);
+                if (slug != null && !slug.isEmpty()) {
+                    installedPrefs.edit().remove(slug).apply();
+                }
+                emitPackageEvent(targetPkg);
             }
         });
     }
@@ -770,6 +870,8 @@ public class GSAndroid {
      * the "installed" event to the web layer (button becomes فتح/إلغاء).
      */
     private void markStateInstalled(final String slug, final String packageName) {
+        ScheduledFuture<?> watcher = installWatchers.remove(slug);
+        if (watcher != null) watcher.cancel(true);
         DownloadState state = active.get(slug);
         if (state != null) {
             state.installed = true;
@@ -808,6 +910,25 @@ public class GSAndroid {
      */
     private void ensureReconciled() {
         if (!stateLoaded) loadPersistedStates();
+
+        // 1. Check live active states
+        for (Map.Entry<String, DownloadState> entry : active.entrySet()) {
+            DownloadState st = entry.getValue();
+            if (st.installed) continue;
+            String pkg = st.packageName;
+            if (pkg == null || pkg.isEmpty()) {
+                pkg = readApkPackageName(st.file);
+                if (pkg != null && !pkg.isEmpty()) st.packageName = pkg;
+            }
+            if (pkg == null || pkg.isEmpty()) {
+                pkg = installedPrefs.getString(st.slug, "");
+            }
+            if (pkg != null && !pkg.isEmpty() && !isPackageInstalledInternal(pkg).isEmpty()) {
+                markStateInstalled(st.slug, pkg);
+            }
+        }
+
+        // 2. Check persisted states
         boolean dirty = false;
         Iterator<Map.Entry<String, JSONObject>> it = persisted.entrySet().iterator();
         while (it.hasNext()) {
@@ -845,9 +966,7 @@ public class GSAndroid {
                 installedPrefs.edit().putString(slug, pkg).apply();
                 it.remove();
                 dirty = true;
-                final String s = slug;
-                final String rp = pkg;
-                mainHandler.post(() -> emit(s, "installed", 1.0, rp));
+                markStateInstalled(slug, pkg);
             } else if ("installing".equals(status)) {
                 try { p.put("status", "downloaded"); } catch (Exception ignore) {}
                 dirty = true;
@@ -896,13 +1015,33 @@ public class GSAndroid {
     }
 
     private String isPackageInstalledInternal(String packageName) {
+        if (packageName == null || packageName.trim().isEmpty()) return "";
+        String pkg = packageName.trim();
         try {
-            PackageInfo info = activity.getPackageManager().getPackageInfo(packageName, 0);
-            if (info == null) return "";
-            return info.versionName != null ? info.versionName : "installed";
-        } catch (Throwable t) {
-            return "";
-        }
+            PackageManager pm = activity.getPackageManager();
+            if (pm != null) {
+                PackageInfo info = pm.getPackageInfo(pkg, 0);
+                if (info != null) {
+                    return info.versionName != null ? info.versionName : "installed";
+                }
+            }
+        } catch (Throwable ignore) {}
+
+        try {
+            PackageManager pm = activity.getPackageManager();
+            if (pm != null && pm.getApplicationInfo(pkg, 0) != null) {
+                return "installed";
+            }
+        } catch (Throwable ignore) {}
+
+        try {
+            PackageManager pm = activity.getPackageManager();
+            if (pm != null && pm.getLaunchIntentForPackage(pkg) != null) {
+                return "installed";
+            }
+        } catch (Throwable ignore) {}
+
+        return "";
     }
 
     /**

@@ -376,7 +376,7 @@
     }
     function uninstallInstalled(a) {
       if (isNativeApp() && window.GSAndroid && typeof window.GSAndroid.uninstallApp === 'function') {
-        try { window.GSAndroid.uninstallApp(realPackage(a)); return; } catch (e) {}
+        try { window.GSAndroid.uninstallApp(realPackage(a), a.slug || ''); return; } catch (e) {}
       }
       toast(t('غير متاح في هذا المتصفح'), 'info');
     }
@@ -405,25 +405,17 @@
      */
     function showInstalledActions(a, opts = {}) {
       if (!isNativeApp()) return;
-      const withOpen = opts.withOpen !== false;
       removeInstalledActions();
       const bar = el('div', { class: 'installed-actions', id: 'gs-installed-actions' });
-      if (withOpen) {
-        bar.append(
-          el('button', { class: 'btn btn-primary btn-lg', type: 'button', onclick: () => openInstalled(a) },
-            ico('play', 'icon'), t('فتح')),
-          el('button', { class: 'btn btn-secondary btn-lg', type: 'button', onclick: () => uninstallInstalled(a) },
-            ico('trash', 'icon'), t('إلغاء التثبيت')),
-        );
-      } else {
-        bar.append(
-          el('button', { class: 'btn btn-secondary btn-lg', type: 'button', onclick: () => uninstallInstalled(a) },
-            ico('trash', 'icon'), t('إلغاء التثبيت')),
-        );
-      }
+      bar.append(
+        el('button', { class: 'btn btn-primary btn-lg gs-action-open', type: 'button', onclick: () => openInstalled(a) },
+          ico('play', 'icon'), t('فتح')),
+        el('button', { class: 'btn btn-secondary btn-lg gs-action-uninstall', type: 'button', onclick: () => uninstallInstalled(a) },
+          ico('trash', 'icon'), t('إلغاء التثبيت')),
+      );
       const anchor = document.querySelector('.detail .d-actions');
       if (anchor && anchor.parentNode) {
-        if (withOpen) anchor.style.display = 'none'; // no duplicate "تم التثبيت" button
+        anchor.style.display = 'none';
         anchor.parentNode.insertBefore(bar, anchor.nextSibling);
       } else {
         const det = document.querySelector('.detail');

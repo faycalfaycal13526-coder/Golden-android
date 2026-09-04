@@ -109,7 +109,7 @@
             onclick: (e) => {
               e.preventDefault(); e.stopPropagation();
               try {
-                window.GSAndroid.uninstallApp(st.pkg);
+                window.GSAndroid.uninstallApp(st.pkg, item.slug || '');
                 toast(t('جارٍ إلغاء التثبيت…'), 'info');
               } catch (err) {}
             },
