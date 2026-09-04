@@ -1059,6 +1059,13 @@ window.__gsApkDownloadUpdate = function (slug, status, progress, message) {
         // Central pipeline: registry + state cleanup + UI events. `message`
         // carries the REAL resolved package name (native ground truth).
         applyInstalled(slug, message || '');
+      } else if (status === 'uninstalled') {
+        unmarkInstalledStored(slug);
+        removeApkState(slug);
+        removeActiveDownload(slug);
+        try { window.dispatchEvent(new CustomEvent('gs-apk-state', { detail: { slug, status: 'uninstalled', progress: -1, message } })); } catch (e) {}
+        try { window.dispatchEvent(new CustomEvent('gs-package-uninstalled', { detail: { slug, packageName: message } })); } catch (e) {}
+        return;
       } else if (status === 'cancelled' || status === 'failed') {
         const isInst = (typeof isSlugInstalled === 'function' && isSlugInstalled(slug)) || (typeof resolvedPackageName === 'function' && resolvedPackageName(slug) && typeof isPackageInstalled === 'function' && isPackageInstalled(resolvedPackageName(slug)));
         if (isInst && status === 'failed') {
@@ -1145,6 +1152,14 @@ window.__gsPackageUninstalled = function (packageName) {
   try {
     if (!packageName) return;
     window.dispatchEvent(new CustomEvent('gs-package-uninstalled', { detail: { packageName: packageName } }));
+    watchedApps.forEach((pkg, slug) => {
+      if (pkg === packageName || resolvedPackageName(slug) === packageName) {
+        unmarkInstalledStored(slug);
+        removeApkState(slug);
+        removeActiveDownload(slug);
+        try { window.dispatchEvent(new CustomEvent('gs-apk-state', { detail: { slug, status: 'uninstalled', progress: -1, message: packageName } })); } catch (e) {}
+      }
+    });
   } catch (e) {}
 };
 
@@ -1283,18 +1298,34 @@ function heartbeatTick() {
   try {
     // 1) The app this page displays (even when no live download exists).
     watchedApps.forEach((pkg, slug) => {
-      const st = checkAppStatus(slug, pkg || resolvedPackageName(slug));
-      if (st && st.installed) applyInstalled(slug, st.package_name);
+      const targetPkg = pkg || resolvedPackageName(slug) || '';
+      const st = checkAppStatus(slug, targetPkg);
+      if (st && st.installed) {
+        applyInstalled(slug, st.package_name);
+      } else if (st && !st.installed && isInstalledStored(slug)) {
+        unmarkInstalledStored(slug);
+        removeApkState(slug);
+        removeActiveDownload(slug);
+        try { window.dispatchEvent(new CustomEvent('gs-apk-state', { detail: { slug, status: 'uninstalled', progress: -1, message: targetPkg } })); } catch (e) {}
+        try { window.dispatchEvent(new CustomEvent('gs-package-uninstalled', { detail: { slug, packageName: targetPkg } })); } catch (e) {}
+      }
     });
     // 2) Every non-idle live entry (self-heals the library & other pages).
     const map = getApkStateMap();
     Object.keys(map).forEach((slug) => {
       const st = map[slug];
       if (!st || st.status === 'none') return;
-      if (st.status === 'downloading') return; // downloads stream their own events
+      if (st.status === 'downloading') return;
       const info = st.package_name || resolvedPackageName(slug) || '';
       const res = checkAppStatus(slug, info);
-      if (res && res.installed) applyInstalled(slug, res.package_name);
+      if (res && res.installed) {
+        applyInstalled(slug, res.package_name);
+      } else if (res && !res.installed && isInstalledStored(slug)) {
+        unmarkInstalledStored(slug);
+        removeApkState(slug);
+        removeActiveDownload(slug);
+        try { window.dispatchEvent(new CustomEvent('gs-apk-state', { detail: { slug, status: 'uninstalled', progress: -1, message: info } })); } catch (e) {}
+      }
     });
   } catch (e) { console.error('[heartbeat]', e); }
 }

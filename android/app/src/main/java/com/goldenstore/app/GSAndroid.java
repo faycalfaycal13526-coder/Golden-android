@@ -85,6 +85,8 @@ public class GSAndroid {
     private final WebView webView;
     private final Handler mainHandler;
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
+    private volatile String lastUninstallSlug = null;
+    private volatile String lastUninstallPkg = null;
     // Dedicated thread for notification work (icon fetching must never block
     // the download executor nor the UI thread).
     private final ExecutorService notifExecutor = Executors.newSingleThreadExecutor();
@@ -308,10 +310,43 @@ public class GSAndroid {
      * what makes progress/status "live" across app exits and installer round
      * trips.
      */
+    private String getSlugForPackage(String packageName) {
+        if (packageName == null || packageName.isEmpty()) return null;
+        try {
+            Map<String, ?> all = installedPrefs.getAll();
+            for (Map.Entry<String, ?> e : all.entrySet()) {
+                if (packageName.equals(String.valueOf(e.getValue()))) {
+                    return e.getKey();
+                }
+            }
+        } catch (Exception ignore) {}
+        return null;
+    }
+
+    private void checkPendingUninstall() {
+        final String targetPkg = lastUninstallPkg;
+        final String targetSlug = lastUninstallSlug;
+        if (targetPkg != null && !targetPkg.isEmpty()) {
+            if (isPackageInstalledInternal(targetPkg).isEmpty()) {
+                Log.i(TAG, "Pending uninstall confirmed for pkg=" + targetPkg + ", slug=" + targetSlug);
+                removeInstalledRegistryByPackage(targetPkg);
+                if (targetSlug != null && !targetSlug.isEmpty()) {
+                    installedPrefs.edit().remove(targetSlug).apply();
+                    persisted.remove(targetSlug);
+                    savePersistedStates();
+                    mainHandler.post(() -> emit(targetSlug, "uninstalled", -1, targetPkg));
+                }
+                mainHandler.post(() -> emitPackageEvent(targetPkg));
+                lastUninstallPkg = null;
+                lastUninstallSlug = null;
+            }
+        }
+    }
+
     public void onAppResumed() {
+        checkPendingUninstall();
         ensureReconciled();
         mainHandler.post(this::pushAllStates);
-        autoResumeInterrupted();
     }
 
     /* ------------------------------------------------------------------
@@ -356,22 +391,7 @@ public class GSAndroid {
         String safeFile = (filename != null && !filename.isEmpty()) ? filename : (slug + ".apk");
         state.file = new File(dir, safeFile);
 
-        long resumeFrom = 0;
-        if (allowResume) {
-            JSONObject prev = persisted.get(slug);
-            if (prev != null && state.file.exists() && state.file.length() > 0
-                    && state.file.length() < (prev.optLong("total_bytes", 0))) {
-                // Only resume when the stored bytes match the partial file size.
-                if (prev.optLong("downloaded_bytes", -1) == state.file.length()) {
-                    resumeFrom = state.file.length();
-                    state.downloadedBytes = resumeFrom;
-                    state.totalBytes = prev.optLong("total_bytes", 0);
-                }
-            }
-        }
-
         HttpURLConnection conn = null;
-        boolean appending = resumeFrom > 0;
         try {
             String downloadUrl = appendStreamParam(url);
             conn = (HttpURLConnection) new URL(downloadUrl).openConnection();
@@ -379,22 +399,11 @@ public class GSAndroid {
             conn.setConnectTimeout(30000);
             conn.setReadTimeout(0);
             conn.setRequestProperty("User-Agent", "GoldenStoreApp Android");
-            if (appending) {
-                conn.setRequestProperty("Range", "bytes=" + resumeFrom + "-");
-            }
             int responseCode = conn.getResponseCode();
             if (responseCode >= 400) {
                 throw new Exception("HTTP " + responseCode);
             }
-            boolean serverResumed = (responseCode == HttpURLConnection.HTTP_PARTIAL);
-            if (appending && !serverResumed) {
-                // Server ignored the Range header — restart from scratch.
-                appending = false;
-                state.downloadedBytes = 0;
-            }
-
             long total = conn.getContentLengthLong();
-            if (serverResumed) total += resumeFrom;
             state.totalBytes = total;
             if (total > 0) {
                 JSONObject p = persistedState(slug);
@@ -402,9 +411,9 @@ public class GSAndroid {
             }
 
             InputStream in = conn.getInputStream();
-            OutputStream out = new FileOutputStream(state.file, appending);
+            OutputStream out = new FileOutputStream(state.file, false);
             byte[] buffer = new byte[16384];
-            long downloaded = state.downloadedBytes;
+            long downloaded = 0;
             int read;
             while ((read = in.read(buffer)) != -1) {
                 if (state.cancelled) {
@@ -427,7 +436,6 @@ public class GSAndroid {
                     final double p = progress;
                     mainHandler.post(() -> emit(slug, "downloading", p, null));
                 }
-                // Persist resumable progress at most every 2 seconds.
                 if (now - state.lastPersistTime > 2000) {
                     state.lastPersistTime = now;
                     persistState(state);
@@ -438,15 +446,12 @@ public class GSAndroid {
             conn = null;
 
             state.status = "downloaded";
-            // Resolve the REAL package name from the APK itself. Store metadata
-            // can be empty or wrong; install detection depends on an exact
-            // match with what the system installer actually registers, so the
-            // APK file is the ground truth (Google Play never trusts labels).
             String realPkg = readApkPackageName(state.file);
             if (realPkg != null && !realPkg.isEmpty()) {
                 state.packageName = realPkg;
             }
             persistState(state);
+
             final String resolvedPkg = state.packageName;
             mainHandler.post(() -> {
                 emit(slug, "downloaded", 1.0, state.filename);
@@ -459,14 +464,8 @@ public class GSAndroid {
             Log.e(TAG, "Download failed for " + slug, e);
             if (conn != null) conn.disconnect();
             active.remove(slug);
-            // Keep the partial file + progress so the next attempt can resume.
-            if (state.downloadedBytes > 0) {
-                state.status = "downloading";
-                persistState(state);
-            } else {
-                persisted.remove(slug);
-                savePersistedStates();
-            }
+            persisted.remove(slug);
+            savePersistedStates();
             mainHandler.post(() -> emit(slug, "failed", -1, null));
         }
     }
@@ -715,6 +714,9 @@ public class GSAndroid {
             return;
         }
         final String targetPkg = pkg;
+        final String targetSlug = (slug != null && !slug.isEmpty()) ? slug : getSlugForPackage(targetPkg);
+        lastUninstallPkg = targetPkg;
+        lastUninstallSlug = targetSlug;
         activity.runOnUiThread(() -> {
             boolean started = false;
             try {
@@ -970,26 +972,26 @@ public class GSAndroid {
             }
         }
         if (dirty) savePersistedStates();
+        try {
+            Map<String, ?> installedMap = installedPrefs.getAll();
+            for (Map.Entry<String, ?> entry : installedMap.entrySet()) {
+                String s = entry.getKey();
+                String p = String.valueOf(entry.getValue());
+                if (!p.isEmpty() && isPackageInstalledInternal(p).isEmpty()) {
+                    installedPrefs.edit().remove(s).apply();
+                    final String removedSlug = s;
+                    final String removedPkg = p;
+                    mainHandler.post(() -> {
+                        emit(removedSlug, "uninstalled", -1, removedPkg);
+                        emitPackageEvent(removedPkg);
+                    });
+                }
+            }
+        } catch (Exception ignore) {}
     }
 
-    private void autoResumeInterrupted() {
-        for (Map.Entry<String, JSONObject> e : persisted.entrySet()) {
-            JSONObject p = e.getValue();
-            if (!"downloading".equals(p.optString("status", ""))) continue;
-            final String slug = e.getKey();
-            if (active.containsKey(slug)) continue; // still running
-            final String url = p.optString("url", "");
-            final String filename = p.optString("filename", "");
-            final String pkg = p.optString("package_name", "");
-            final String name = p.optString("app_name", "");
-            final String icon = p.optString("icon_url", "");
-            if (url.isEmpty() || filename.isEmpty()) continue;
-            executor.execute(() -> {
-                if (active.containsKey(slug)) return;
-                Log.i(TAG, "Auto-resuming interrupted download: " + slug);
-                startDownload(url, filename, slug, pkg, name, icon, true);
-            });
-        }
+        private void autoResumeInterrupted() {
+        // Disabled: do NOT start downloads automatically without user action.
     }
 
     private void pushAllStates() {
@@ -1290,7 +1292,12 @@ public class GSAndroid {
             boolean changed = false;
             Map<String, ?> all = installedPrefs.getAll();
             for (Map.Entry<String, ?> e : all.entrySet()) {
-                if (packageName.equals(String.valueOf(e.getValue()))) { ed.remove(e.getKey()); changed = true; }
+                if (packageName.equals(String.valueOf(e.getValue()))) {
+                    final String s = e.getKey();
+                    ed.remove(s);
+                    changed = true;
+                    mainHandler.post(() -> emit(s, "uninstalled", -1, packageName));
+                }
             }
             if (changed) ed.apply();
         } catch (Exception ignore) {}

@@ -22,9 +22,9 @@ android {
             // new.keystore has SHA-1: 40:BF:C5:EB:6D:3D:43:4E:E4:14:C9:DE:52:54:B5:6E:10:1F:1A:30
             // which matches the OAuth Android client registered in google-services.json
             storeFile file(System.getenv('KEYSTORE_PATH') ?: 'new.keystore')
-            storePassword System.getenv('KEYSTORE_PASSWORD') ?: (project.findProperty('storePassword') ?: '')
+            storePassword System.getenv('KEYSTORE_PASSWORD') ?: (project.findProperty('storePassword') ?: 'goldenstore')
             keyAlias System.getenv('KEY_ALIAS') ?: (project.findProperty('keyAlias') ?: 'goldenstore')
-            keyPassword System.getenv('KEY_PASSWORD') ?: (project.findProperty('keyPassword') ?: '')
+            keyPassword System.getenv('KEY_PASSWORD') ?: (project.findProperty('keyPassword') ?: 'goldenstore')
         }
     }
     buildTypes {

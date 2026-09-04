@@ -175,14 +175,19 @@
     if (libEventsBound) return;
     libEventsBound = true;
     window.addEventListener('gs-package-uninstalled', (e) => {
-      const pkg = e && e.detail && e.detail.packageName;
-      if (!pkg || !libListRef || !libListRef.isConnected || !libRefreshRowRef) return;
-      libListRef.querySelectorAll('.lib-installed-actions').forEach((act) => {
-        if (act.getAttribute('data-pkg') !== pkg) return;
-        const rowEl = act.closest('.lib-row');
-        const slug = rowEl && rowEl.getAttribute('data-slug');
-        if (slug) libRefreshRowRef(slug);
-      });
+      const d = (e && e.detail) || {};
+      const pkg = d.packageName;
+      const slug = d.slug;
+      if (!libListRef || !libListRef.isConnected || !libRefreshRowRef) return;
+      if (slug) libRefreshRowRef(slug);
+      if (pkg) {
+        libListRef.querySelectorAll('.lib-installed-actions').forEach((act) => {
+          if (act.getAttribute('data-pkg') !== pkg) return;
+          const rowEl = act.closest('.lib-row');
+          const s = rowEl && rowEl.getAttribute('data-slug');
+          if (s) libRefreshRowRef(s);
+        });
+      }
     });
     if (S.onApkState) {
       S.onApkState((evt) => {

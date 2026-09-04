@@ -376,7 +376,24 @@
     }
     function uninstallInstalled(a) {
       if (isNativeApp() && window.GSAndroid && typeof window.GSAndroid.uninstallApp === 'function') {
-        try { window.GSAndroid.uninstallApp(realPackage(a), a.slug || ''); return; } catch (e) {}
+        try {
+          const pkg = realPackage(a);
+          window.GSAndroid.uninstallApp(pkg, a.slug || '');
+          let checks = 0;
+          const poll = setInterval(() => {
+            checks++;
+            if (checks > 60) { clearInterval(poll); return; }
+            const st = S.checkAppStatus ? S.checkAppStatus(a.slug, pkg) : null;
+            if (st && !st.installed) {
+              clearInterval(poll);
+              unmarkInstalledStored(a.slug);
+              removeInstalledActions();
+              showIdle();
+              toast(t('تم إلغاء تثبيت التطبيق'), 'info');
+            }
+          }, 500);
+          return;
+        } catch (e) {}
       }
       toast(t('غير متاح في هذا المتصفح'), 'info');
     }
@@ -561,9 +578,14 @@
     // Listen for native uninstall events: when THIS app's package is removed
     // from the device, drop the local installed state and restore the button.
     window.addEventListener('gs-package-uninstalled', (e) => {
-      const pkg = e && e.detail && e.detail.packageName;
-      if (!pkg || !app.package_name) return;
-      if (pkg === app.package_name) {
+      const d = (e && e.detail) || {};
+      const pkg = d.packageName;
+      const slug = d.slug;
+      const real = realPackage(app);
+      const resolved = (S.resolvedPackageName && S.resolvedPackageName(app.slug)) || '';
+      const matches = (slug && slug === app.slug)
+        || (pkg && (pkg === app.package_name || pkg === real || pkg === resolved));
+      if (matches) {
         unmarkInstalledStored(app.slug);
         removeInstalledActions();
         showIdle();
@@ -776,6 +798,14 @@
       if (!d.slug || d.slug !== app.slug) return;
       resolveInstallState();
     });
+
+    const onAppRevisit = () => {
+      if (document.hidden) return;
+      if (isNativeApp()) resolveInstallState();
+    };
+    document.addEventListener('visibilitychange', onAppRevisit);
+    window.addEventListener('focus', onAppRevisit);
+    window.addEventListener('pageshow', onAppRevisit);
 
     if (isNativeApp()) {
       resolveInstallState();
